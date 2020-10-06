@@ -17,6 +17,8 @@ ENV PS1               '\[\033[36;1m\]\u\[\033[97m\]@\[\033[32m\]${CONTAINERNAME}
 ENV PKG_INSTALL "apk add --no-cache --clean-protected -u"
 ENV PKG_REMOVE  "apk del --no-cache --purge"
 ENV PKG_SEARCH  "apk search --no-cache"
+ENV PKG_CLEANUP1 "apk del --no-cache busybox alpine-baselayout"
+ENV PKG_CLEANUP2 "apk del --no-cache --purge apk-tools zlib alpine-keys"
 ENV ALLOW_USER  "chown -R ${RUN_USER}:${RUN_GROUP}"
 
 # allow derieved images to overwrite the language
