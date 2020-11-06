@@ -1,5 +1,6 @@
+FROM mwaeckerlin/very-base as user
+
 FROM scratch
-MAINTAINER mwaeckerlin
 ARG lang="en_US.UTF-8"
 
 # change in childern:
@@ -20,6 +21,7 @@ ENV PKG_SEARCH  "apk search --no-cache"
 ENV PKG_CLEANUP1 "apk del --no-cache busybox alpine-baselayout"
 ENV PKG_CLEANUP2 "apk del --no-cache --purge apk-tools zlib alpine-keys"
 ENV ALLOW_USER  "chown -R ${RUN_USER}:${RUN_GROUP}"
+COPY --from=user /etc/passwd /etc/passwd
 
 # allow derieved images to overwrite the language
 ONBUILD ARG lang
