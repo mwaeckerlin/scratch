@@ -32,6 +32,7 @@ RUN adduser ${RUN_USER} ${SHARED_GROUP_NAME}
 FROM environment as production
 COPY --from=user /etc/passwd /etc/passwd
 COPY --from=user /etc/group /etc/group
+COPY --from=user --chown=${RUN_USER} /home/${RUN_USER}  /home/${RUN_USER}
 USER $RUN_USER
 
 # allow derieved images to overwrite the language
