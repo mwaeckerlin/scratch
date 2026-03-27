@@ -3,8 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "build": "docker compose build",
-    "start": "docker compose up -d --build --force-recreate --remove-orphans",
-    "stop": "docker compose down"
+    "build": "docker compose build"
   }
 }
