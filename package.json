@@ -1,7 +1,9 @@
 {
   "name": "@mwaeckerlin/scratch",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "scripts": {
-    "build": "docker compose build"
+    "build": "docker compose build",
+    "test": "npm run test:image",
+    "test:image": "npm run build && bash tests/image-contract.sh mwaeckerlin/scratch"
   }
 }
