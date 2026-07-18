@@ -8,13 +8,28 @@ Docker image from scratch with some basic definitions:
 
 Image size: ca. 2.06kB (may change)
 
+## Role: Production Runtime Base
+
+This image is the **runtime base** of the mwaeckerlin image family: use it as
+the **final stage** of every multi-stage build. It contains no shell, no
+package manager and no tools at all, and it already switches to the
+unprivileged `${RUN_USER}`, so every derived image starts non-root and headless
+by default.
+
+Do the actual building in a build image such as
+[mwaeckerlin/very-base](https://github.com/mwaeckerlin/very-base),
+[mwaeckerlin/build](https://github.com/mwaeckerlin/build) or
+[mwaeckerlin/nodejs-build](https://github.com/mwaeckerlin/nodejs-build) —
+those are **build-only** images and must never run in production — then copy
+only the required runtime artifacts into the final stage based on this image.
+
 ## Compile Time Arguments
 
 - `lang` to set language, defaults to `en_US.UTF-8`
 
 ## Environment Arguments
 
-The environment variables are intended to be used in derieved images. They are not intended to be changed. Just use them instread of hard coding in your images.
+The environment variables are intended to be used in derived images. They are not intended to be changed. Just use them instead of hard coding in your images.
 
 ### User Variables
 
