@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-09-26 **1.1.4**
+    - The shared workflow checks out the submodules too, so a test that builds an image from a submodule runs in the pipeline as it does locally
+
 - 2026-09-26 **1.1.3**
     - The shared workflow starts in every repository again: a repository whose workflow token may only read ended every run at start, because the weekly job asked for rights of its own even where it never runs; the rights now come from the caller only
 

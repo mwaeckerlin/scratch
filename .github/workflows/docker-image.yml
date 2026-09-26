@@ -71,6 +71,11 @@ jobs:
       publish: ${{ steps.select.outputs.publish }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # a test may build an image from a submodule (reverse-proxy builds
+          # letsencrypt for its HTTPS test); SSH submodule addresses are
+          # fetched over HTTPS when no ssh-key is given
+          submodules: recursive
       - name: select the images and tags of this repository
         id: select
         shell: python3 {0}

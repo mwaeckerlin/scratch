@@ -221,6 +221,12 @@ with tempfile.TemporaryDirectory() as d:
 check_calls('no_job_asks_for_its_own_rights',
             [job for job, body in workflow['jobs'].items() if 'permissions' in body], [])
 
+# A test may build an image from a submodule (reverse-proxy builds
+# letsencrypt for its HTTPS test); without the submodules the checkout has no
+# Dockerfile there and the test fails before it starts.
+checkout = next(s for s in workflow['jobs']['build']['steps'] if s.get('uses', '').startswith('actions/checkout'))
+check_calls('build_checkout_includes_submodules', (checkout.get('with') or {}).get('submodules'), 'recursive')
+
 print(f'\n==> Workflow contract results: {passed} passed, {failed} failed')
 sys.exit(1 if failed else 0)
 EOF
