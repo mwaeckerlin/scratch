@@ -50,7 +50,7 @@ on:
         type: string
         default: npm test
       free-disk:
-        description: remove the preinstalled SDKs of the runner before the build, for images larger than its 14GB disk
+        description: remove the preinstalled SDKs and images of the runner before the build; measured 2026-09-26 on the 145GB root, free space went from 87 to 114GB on amd64 and from 108 to 123GB on arm64
         type: boolean
         default: false
       branch-tags:

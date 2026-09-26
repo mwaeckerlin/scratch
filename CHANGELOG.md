@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-09-26 **1.1.5**
+    - The documentation of `free-disk` gives the measured disk space of the runners in place of an outdated size
+
 - 2026-09-26 **1.1.4**
     - The shared workflow checks out the submodules too, so a test that builds an image from a submodule runs in the pipeline as it does locally
 

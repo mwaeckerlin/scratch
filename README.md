@@ -146,7 +146,7 @@ A repository that deviates adds a `with:` block:
   ```
 
   The same file stands on every one of those branches, and the scheduled run of the default branch starts the others.
-- `free-disk`: removes the preinstalled SDKs of the runner (.NET, Android, Haskell, the tool cache) before the build, for an image that does not fit into the 14GB disk of a runner; default: `false`
+- `free-disk`: removes the preinstalled SDKs of the runner (.NET, Android, Haskell, the tool cache) and the preloaded Docker images before the build; measured on 2026-09-26, the runners have a 145GB root with 87GB (amd64) and 108GB (arm64) free, and the clean-up raises that to 114GB and 123GB; default: `false`
 
 ### Setup
 
