@@ -213,6 +213,14 @@ with tempfile.TemporaryDirectory() as d:
         'gh workflow run docker.yml --ref new-33',
     ])
 
+# A called workflow gets at most the rights of the caller's token, and GitHub
+# checks the `permissions` of every job at start, also of a job whose `if` is
+# false: a job asking for more ends every run of a read-only repository in
+# startup_failure. The rights come from the caller, which grants them only
+# where it needs them (a caller with `branch-tags` grants `actions: write`).
+check_calls('no_job_asks_for_its_own_rights',
+            [job for job, body in workflow['jobs'].items() if 'permissions' in body], [])
+
 print(f'\n==> Workflow contract results: {passed} passed, {failed} failed')
 sys.exit(1 if failed else 0)
 EOF

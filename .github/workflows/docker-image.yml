@@ -213,12 +213,13 @@ jobs:
 
   branches:
     # scheduled runs start on the default branch only; this one starts the
-    # workflow on every other branch a rule of `branch-tags` names
+    # workflow on every other branch a rule of `branch-tags` names. It needs
+    # `actions: write`, which the caller grants: a `permissions` block here
+    # would be checked at start in every repository, also where this job
+    # never runs, and end every run of a read-only repository in
+    # startup_failure.
     if: github.event_name == 'schedule' && inputs.branch-tags != '[]'
     runs-on: ubuntu-24.04
-    permissions:
-      actions: write
-      contents: read
     steps:
       - uses: actions/checkout@v5
         with:

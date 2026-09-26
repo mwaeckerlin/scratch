@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-09-26 **1.1.3**
+    - The shared workflow starts in every repository again: a repository whose workflow token may only read ended every run at start, because the weekly job asked for rights of its own even where it never runs; the rights now come from the caller only
+
 - 2026-09-26 **1.1.2**
     - The image is published for amd64 and arm64 under one tag, built and published automatically on every change and every week
     - Every image is published under its tag, the date of the build, and the version with and without the date, so every rebuild stays addressable; repositories with version branches, such as the Nextcloud images, build and publish every version, also in the weekly rebuild
