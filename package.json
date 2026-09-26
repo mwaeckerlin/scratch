@@ -1,9 +1,13 @@
 {
   "name": "@mwaeckerlin/scratch",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "scripts": {
     "build": "docker compose build",
-    "test": "npm run test:image",
-    "test:image": "npm run build && bash tests/image-contract.sh mwaeckerlin/scratch"
+    "test": "npm run test:docs && npm run test:workflow && npm run test:image && npm run test:config",
+    "test:docs": "bash tests/docs-contract.sh",
+    "test:workflow": "bash tests/workflow-contract.sh",
+    "test:image": "npm run build && bash tests/image-contract.sh mwaeckerlin/scratch",
+    "test:config": "bash tests/config-contract.sh mwaeckerlin/scratch",
+    "deploy": "docker compose push"
   }
 }

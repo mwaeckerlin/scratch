@@ -1,0 +1,241 @@
+# Builds, tests and deploys every image that the docker-compose file of the
+# calling repository builds, for each architecture on a native runner, and
+# publishes it on Docker Hub as one multi-platform image under all its tags.
+#
+# Every image repository of mwaeckerlin calls this one workflow, so the build
+# and deploy rules live in one place. The caller is the short file
+# `.github/workflows/docker.yml` described in the README of mwaeckerlin/scratch.
+#
+# The images are the compose services that have both `build` and `image`.
+# A service whose build context lies in a git submodule is skipped: it belongs
+# to the submodule's own repository, which publishes it itself.
+#
+# Tags. An image `repo:latest` is published as `latest`, `YYYYMMDD` (the day
+# of the build, UTC), `<version>` and `<version>-YYYYMMDD`, the version taken
+# from package.json; an image with an own tag `repo:inotify` as `inotify`,
+# `inotify-YYYYMMDD`, `inotify-<version>` and `inotify-<version>-YYYYMMDD`. So a
+# rebuild of the same version stays addressable by its date. A repository that
+# builds several versions from branches names them in `branch-tags`: the first
+# rule whose `branch` matches the branch name (a Python regular expression,
+# matched in full) gives the suffix of every tag, e.g. branch `new-33` of
+# nextcloud builds `nginx-33`, `nginx-33-20260926`, …
+#
+# Per architecture: `docker compose build`, `npm test`, then `npm run deploy`
+# with a compose override that names every image with an architecture tag
+# (`latest-amd64`, `nginx-33-arm64`). Only when every architecture is green,
+# the deploy job joins them into all tags of the image, from which docker
+# pulls the variant that fits the host. Any failure stops the run before a
+# published tag changes.
+#
+# GitHub starts scheduled runs on the default branch only. With `branch-tags`,
+# the scheduled run therefore starts the workflow `docker.yml` on every other
+# branch that matches a rule, so the weekly rebuild reaches every version; the
+# caller grants `actions: write` for that.
+#
+# Needs in the calling repository: the secret DOCKERHUB_TOKEN, a Docker Hub
+# access token with read and write. The Docker Hub user is the variable
+# DOCKERHUB_USERNAME, or the GitHub owner of the repository if it is not set.
+
+name: docker-image
+
+on:
+  workflow_call:
+    inputs:
+      architectures:
+        description: JSON list of the architectures, each built on a native runner
+        type: string
+        default: '["amd64", "arm64"]'
+      test:
+        description: command that tests the built images before they are deployed; empty for none
+        type: string
+        default: npm test
+      free-disk:
+        description: remove the preinstalled SDKs of the runner before the build, for images larger than its 14GB disk
+        type: boolean
+        default: false
+      branch-tags:
+        description: 'JSON list of {"branch": <regex>, "suffix": <template>}; the first rule matching the branch appends its suffix to every tag'
+        type: string
+        default: '[]'
+    secrets:
+      DOCKERHUB_TOKEN:
+        required: true
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    outputs:
+      publish: ${{ steps.select.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: select the images and tags of this repository
+        id: select
+        shell: python3 {0}
+        env:
+          ARCH: ${{ matrix.arch }}
+          REF_NAME: ${{ github.ref_name }}
+          BRANCH_TAGS: ${{ inputs.branch-tags }}
+          # set by the tests only; a run uses the day it runs
+          BUILD_DATE: ""
+        run: |
+          import datetime, json, os, re, subprocess, sys
+
+          config = json.loads(subprocess.run(
+              ['docker', 'compose', 'config', '--format', 'json'],
+              check=True, capture_output=True, text=True).stdout)
+          compose = next((f for f in ('compose.yaml', 'compose.yml', 'docker-compose.yaml', 'docker-compose.yml')
+                          if os.path.exists(f)), None)
+          submodules = []
+          if os.path.exists('.gitmodules'):
+              lines = subprocess.run(
+                  ['git', 'config', '--file', '.gitmodules', '--get-regexp', r'\.path$'],
+                  capture_output=True, text=True).stdout.splitlines()
+              submodules = [line.split(' ', 1)[1] for line in lines]
+
+          suffix = ''
+          for rule in json.loads(os.environ.get('BRANCH_TAGS') or '[]'):
+              found = re.fullmatch(rule['branch'], os.environ.get('REF_NAME', ''))
+              if found:
+                  suffix = found.expand(rule['suffix'])
+                  break
+          date = os.environ.get('BUILD_DATE') or datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
+          version = json.load(open('package.json')).get('version') if os.path.exists('package.json') else None
+
+          def tags(tag):
+              """Every tag an image `repo:<tag>` is published under."""
+              base = tag + suffix if tag != 'latest' else (suffix.lstrip('-') or 'latest')
+              result = [base, date if base == 'latest' else f'{base}-{date}']
+              if version:
+                  named = version if base == 'latest' else f'{base}-{version}'
+                  result += [named, f'{named}-{date}']
+              return base, result
+
+          root = os.getcwd()
+          services, stage, publish, override = [], [], [], {}
+          for name, service in sorted(config.get('services', {}).items()):
+              if 'build' not in service:
+                  continue
+              if not service.get('image'):
+                  print(f'skipped {name}: no image name, so it cannot be pushed')
+                  continue
+              context = os.path.relpath(service['build'].get('context', root), root)
+              owner = next((s for s in submodules if context == s or context.startswith(s + '/')), None)
+              if owner:
+                  print(f'skipped {name}: built in submodule {owner}, which publishes it')
+                  continue
+              image = service['image']
+              if ':' not in image.rsplit('/', 1)[-1]:
+                  image += ':latest'
+              repository, tag = image.rsplit(':', 1)
+              base, all_tags = tags(tag)
+              staging = f'{repository}:{base}'
+              services.append(name)
+              override[name] = {'image': f"{staging}-{os.environ['ARCH']}"}
+              if [image, staging] not in stage:
+                  stage.append([image, staging])
+                  publish.append({'source': staging, 'tags': [f'{repository}:{t}' for t in all_tags]})
+          if not stage:
+              print('::error::the compose file builds no image of this repository')
+              sys.exit(1)
+          # the override gives every image its architecture tag, so that
+          # `npm run deploy` pushes the tested image without touching a
+          # published tag
+          override_file = os.path.join(os.environ['RUNNER_TEMP'], 'docker-compose.deploy.yml')
+          with open(override_file, 'w') as out:
+              json.dump({'services': override}, out, indent=2)
+          print('services:', *services)
+          for entry in publish:
+              print('publish', entry['source'], 'as', *entry['tags'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"services={' '.join(services)}\n")
+              output.write(f"stage={json.dumps(stage)}\n")
+              output.write(f"publish={json.dumps(publish)}\n")
+              output.write(f"compose-files={compose}:{override_file}\n")
+      - name: free disk space
+        if: inputs.free-disk
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache /usr/local/share/boost /usr/share/swift
+          docker system prune --all --force
+          df -h /
+      - name: build
+        run: docker compose build ${{ steps.select.outputs.services }}
+      - name: install the development dependencies
+        if: inputs.test != '' && hashFiles('package-lock.json') != ''
+        run: npm ci
+      - name: test
+        if: inputs.test != ''
+        env:
+          TEST: ${{ inputs.test }}
+        run: bash -c "$TEST"
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: deploy under the architecture tag
+        env:
+          STAGE: ${{ steps.select.outputs.stage }}
+          ARCH: ${{ matrix.arch }}
+          COMPOSE_FILE: ${{ steps.select.outputs.compose-files }}
+          COMPOSE_PATH_SEPARATOR: ":"
+        run: |
+          for pair in $(echo "$STAGE" | jq -r '.[] | .[0] + "=" + .[1]'); do
+            docker tag "${pair%%=*}" "${pair#*=}-$ARCH"
+          done
+          npm run deploy
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: join the architectures into all tags
+        env:
+          PUBLISH: ${{ needs.build.outputs.publish }}
+          ARCHITECTURES: ${{ join(fromJSON(inputs.architectures), ' ') }}
+        run: |
+          echo "$PUBLISH" | jq -c '.[]' | while read -r entry; do
+            source=$(echo "$entry" | jq -r '.source')
+            targets=$(echo "$entry" | jq -r '.tags[] | "-t " + .')
+            sources=""
+            for arch in $ARCHITECTURES; do
+              sources="$sources $source-$arch"
+            done
+            docker buildx imagetools create $targets $sources
+          done
+
+  branches:
+    # scheduled runs start on the default branch only; this one starts the
+    # workflow on every other branch a rule of `branch-tags` names
+    if: github.event_name == 'schedule' && inputs.branch-tags != '[]'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: start the weekly rebuild on every version branch
+        shell: python3 {0}
+        env:
+          BRANCH_TAGS: ${{ inputs.branch-tags }}
+          REF_NAME: ${{ github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import json, os, re, subprocess
+          rules = json.loads(os.environ['BRANCH_TAGS'])
+          heads = subprocess.run(['git', 'ls-remote', '--heads', 'origin'], check=True,
+                                 capture_output=True, text=True).stdout.split()
+          branches = [ref.removeprefix('refs/heads/') for ref in heads if ref.startswith('refs/heads/')]
+          for branch in sorted(branches):
+              if branch != os.environ['REF_NAME'] and any(re.fullmatch(r['branch'], branch) for r in rules):
+                  print('rebuild', branch)
+                  subprocess.run(['gh', 'workflow', 'run', 'docker.yml', '--ref', branch], check=True)
