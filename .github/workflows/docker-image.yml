@@ -222,6 +222,31 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - uses: docker/setup-buildx-action@v4
+      - name: keep the image that is replaced under the day it was built
+        shell: python3 {0}
+        env:
+          PUBLISH: ${{ needs.build.outputs.publish }}
+        run: |
+          import json, os, subprocess
+
+          def inspect(name):
+              run = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', name, '--format', '{{json .Image}}'],
+                                   capture_output=True, text=True)
+              return json.loads(run.stdout) if run.returncode == 0 and run.stdout.strip() else None
+
+          for entry in json.loads(os.environ['PUBLISH']):
+              current = entry['tags'][0]
+              image = inspect(current)
+              if not image:
+                  continue
+              config = image if 'created' in image else next(iter(image.values()))
+              day = config['created'][:10].replace('-', '')
+              repository, tag = current.rsplit(':', 1)
+              dated = f'{repository}:{day}' if tag == 'latest' else f'{current}-{day}'
+              if dated in entry['tags'] or inspect(dated):
+                  continue
+              print('keep', current, 'as', dated)
+              subprocess.run(['docker', 'buildx', 'imagetools', 'create', '-t', dated, current], check=True)
       - name: join the architectures into all tags
         env:
           PUBLISH: ${{ needs.build.outputs.publish }}

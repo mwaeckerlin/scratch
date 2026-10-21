@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-21 **1.1.10**
+    - Before a build overwrites a tag, the image it replaces gets the tag with the day it was built, so an earlier version stays reachable for a revert also where it was published without a date
+
 - 2026-10-21 **1.1.9**
     - The workflow, its documentation and its contract name no repository that builds on this one; every caller names its own rules
 

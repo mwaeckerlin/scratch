@@ -81,6 +81,8 @@ Every image is published under its tag, the date of the build (UTC) and, where `
 | `mwaeckerlin/x` | `latest`, `20260926`, `1.3.2`, `1.3.2-20260926` |
 | `mwaeckerlin/x:inotify` | `inotify`, `inotify-20260926`, `inotify-1.3.2`, `inotify-1.3.2-20260926` |
 
+Before the new image takes a tag, the image that carried it gets the same tag with the day it was built, `20180304` for `latest` and `inotify-20180304` for `inotify`, unless such a tag already exists. An image published before the date tags existed stays reachable for a revert.
+
 A repository that builds several versions from branches names its branches in `branch-tags`: the first rule whose `branch` (a Python regular expression, matched in full) fits the branch name appends its `suffix` to every tag. With the rules `[{"branch": "new-([0-9]+)", "suffix": "-\\1"}, {"branch": "new", "suffix": ""}]`, branch `new-33` publishes `nginx-33`, `nginx-33-20260926`, `nginx-33-1.1.2` and `nginx-33-1.1.2-20260926`. GitHub starts scheduled runs on the default branch only, so there the job `branches` starts the workflow `docker.yml` on every other branch a rule names; the weekly rebuild thereby reaches every version.
 
 Every step must succeed: a failed build, test or push stops the run, and the plain tag keeps the last version that passed on every architecture. A repository that builds nothing of its own fails the run with an error.

@@ -224,6 +224,33 @@ check_calls('deploy_step_joins_into_every_tag', shell_step('deploy', 'join the a
     'mwaeckerlin/x:latest-amd64 mwaeckerlin/x:latest-arm64',
 ])
 
+keep_step = next(s for s in workflow['jobs']['deploy']['steps'] if s.get('name', '').startswith('keep the image'))
+KEEP_PUBLISH = json.dumps([
+    {'source': 'mwaeckerlin/x:latest', 'tags': ['mwaeckerlin/x:latest', 'mwaeckerlin/x:20261021']},
+    {'source': 'mwaeckerlin/x:app', 'tags': ['mwaeckerlin/x:app', 'mwaeckerlin/x:app-20261021']},
+    {'source': 'mwaeckerlin/x:kept', 'tags': ['mwaeckerlin/x:kept', 'mwaeckerlin/x:kept-20261021']},
+    {'source': 'mwaeckerlin/x:new', 'tags': ['mwaeckerlin/x:new', 'mwaeckerlin/x:new-20261021']},
+])
+with tempfile.TemporaryDirectory() as d:
+    log = os.path.join(d, 'calls')
+    open(os.path.join(d, 'docker'), 'w').write(f'''#!/bin/sh
+case "$3 $4" in
+  "inspect mwaeckerlin/x:latest") echo '{{"created": "2018-03-04T10:00:00Z"}}' ;;
+  "inspect mwaeckerlin/x:app") echo '{{"linux/amd64": {{"created": "2026-09-23T12:00:00Z"}}, "linux/arm64": {{"created": "2026-09-23T12:00:01Z"}}}}' ;;
+  "inspect mwaeckerlin/x:kept") echo '{{"created": "2026-09-01T00:00:00Z"}}' ;;
+  "inspect mwaeckerlin/x:kept-20260901") echo '{{"created": "2026-09-01T00:00:00Z"}}' ;;
+  "inspect "*) exit 1 ;;
+  *) echo "docker $*" >> {log} ;;
+esac
+''')
+    os.chmod(os.path.join(d, 'docker'), 0o755)
+    subprocess.run([sys.executable, '-c', keep_step['run']], check=True, capture_output=True, text=True,
+                   env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'PUBLISH': KEEP_PUBLISH})
+    check_calls('replaced_image_keeps_its_build_day', open(log).read().splitlines(), [
+        'docker buildx imagetools create -t mwaeckerlin/x:20180304 mwaeckerlin/x:latest',
+        'docker buildx imagetools create -t mwaeckerlin/x:app-20260923 mwaeckerlin/x:app',
+    ])
+
 # The weekly run starts the workflow on every version branch a rule names, and
 # on no other; git answers with a fixed list of branches.
 branch_step = next(s for s in workflow['jobs']['branches']['steps'] if s.get('name', '').startswith('start the weekly'))
