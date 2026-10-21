@@ -69,7 +69,7 @@ Every image repository of the family builds and publishes its images with the re
 1. builds every service of `docker-compose.yml` that has both `build` and `image`, with `docker compose build`; a service whose build context lies in a git submodule is left to the submodule's own repository
 2. does this on a native runner per architecture, `linux/amd64` on `ubuntu-24.04` and `linux/arm64` on `ubuntu-24.04-arm`, without emulation
 3. runs `npm ci` where a `package-lock.json` exists, then `npm test`
-4. runs `npm run deploy` with a compose override that gives each image an architecture tag, so it pushes `mwaeckerlin/rsync:latest-amd64` and `mwaeckerlin/rsync:latest-arm64`
+4. runs `npm run deploy` with a compose override that gives each image an architecture tag, so it pushes `mwaeckerlin/x:latest-amd64` and `mwaeckerlin/x:latest-arm64`
 5. in the final job `deploy`, joins the architecture tags into every tag of the image, from which docker pulls the variant that fits the host
 
 ### Tags
@@ -78,10 +78,10 @@ Every image is published under its tag, the date of the build (UTC) and, where `
 
 | Compose image | Published tags |
 | --- | --- |
-| `mwaeckerlin/rsync` | `latest`, `20260926`, `1.3.2`, `1.3.2-20260926` |
-| `mwaeckerlin/rsync:inotify` | `inotify`, `inotify-20260926`, `inotify-1.3.2`, `inotify-1.3.2-20260926` |
+| `mwaeckerlin/x` | `latest`, `20260926`, `1.3.2`, `1.3.2-20260926` |
+| `mwaeckerlin/x:inotify` | `inotify`, `inotify-20260926`, `inotify-1.3.2`, `inotify-1.3.2-20260926` |
 
-A repository that builds several versions from branches — Nextcloud upgrades one major version at a time, so each major version has its own image — names its branches in `branch-tags`: the first rule whose `branch` (a Python regular expression, matched in full) fits the branch name appends its `suffix` to every tag. With the rules `[{"branch": "new-([0-9]+)", "suffix": "-\\1"}, {"branch": "new", "suffix": ""}]`, branch `new-33` publishes `nginx-33`, `nginx-33-20260926`, `nginx-33-1.1.2` and `nginx-33-1.1.2-20260926`. GitHub starts scheduled runs on the default branch only, so there the job `branches` starts the workflow `docker.yml` on every other branch a rule names; the weekly rebuild thereby reaches every version.
+A repository that builds several versions from branches names its branches in `branch-tags`: the first rule whose `branch` (a Python regular expression, matched in full) fits the branch name appends its `suffix` to every tag. With the rules `[{"branch": "new-([0-9]+)", "suffix": "-\\1"}, {"branch": "new", "suffix": ""}]`, branch `new-33` publishes `nginx-33`, `nginx-33-20260926`, `nginx-33-1.1.2` and `nginx-33-1.1.2-20260926`. GitHub starts scheduled runs on the default branch only, so there the job `branches` starts the workflow `docker.yml` on every other branch a rule names; the weekly rebuild thereby reaches every version.
 
 Every step must succeed: a failed build, test or push stops the run, and the plain tag keeps the last version that passed on every architecture. A repository that builds nothing of its own fails the run with an error.
 

@@ -17,8 +17,8 @@
 # rebuild of the same version stays addressable by its date. A repository that
 # builds several versions from branches names them in `branch-tags`: the first
 # rule whose `branch` matches the branch name (a Python regular expression,
-# matched in full) gives the suffix of every tag, e.g. branch `new-33` of
-# nextcloud builds `nginx-33`, `nginx-33-20260926`, …
+# matched in full) gives the suffix of every tag, e.g. branch `new-33` with
+# the rule `new-([0-9]+)` → `-\1` builds `nginx-33`, `nginx-33-20260926`, …
 #
 # Per architecture: `docker compose build`, `npm test`, then `npm run deploy`
 # with a compose override that names every image with an architecture tag

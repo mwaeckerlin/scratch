@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-21 **1.1.9**
+    - The workflow, its documentation and its contract name no repository that builds on this one; every caller names its own rules
+
 - 2026-10-21 **1.1.8**
     - The examples of the documentation and of the workflow contract name no image of another repository
 
@@ -20,7 +23,7 @@
 
 - 2026-09-26 **1.1.2**
     - The image is published for amd64 and arm64 under one tag, built and published automatically on every change and every week
-    - Every image is published under its tag, the date of the build, and the version with and without the date, so every rebuild stays addressable; repositories with version branches, such as the Nextcloud images, build and publish every version, also in the weekly rebuild
+    - Every image is published under its tag, the date of the build, and the version with and without the date, so every rebuild stays addressable; repositories with version branches build and publish every version, also in the weekly rebuild
     - One shared build, test and deploy workflow for every image of the family, documented in the README: an image reaches Docker Hub only when its build, its tests and its deploy succeeded on every architecture
     - The documentation names mwaeckerlin/ubuntu-scratch as the final stage for software built on Ubuntu
 

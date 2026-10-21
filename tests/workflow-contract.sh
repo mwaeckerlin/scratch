@@ -100,30 +100,30 @@ services:
                                                 'mwaeckerlin/x:inotify-1.3.2', 'mwaeckerlin/x:inotify-1.3.2-20260926']},
 ], version='1.3.2')
 
-NEXTCLOUD_RULES = [{'branch': 'new-([0-9]+)', 'suffix': '-\\1'}, {'branch': 'new', 'suffix': ''}]
-NEXTCLOUD = '''
+BRANCH_RULES = [{'branch': 'new-([0-9]+)', 'suffix': '-\\1'}, {'branch': 'new', 'suffix': ''}]
+BRANCHES = '''
 services:
-  nginx: {build: ., image: mwaeckerlin/nextcloud:nginx}
+  nginx: {build: ., image: mwaeckerlin/x:nginx}
 '''
-check('version_branch_gets_its_suffix', NEXTCLOUD, 'nginx', [
-    {'source': 'mwaeckerlin/nextcloud:nginx-33', 'tags': [
-        'mwaeckerlin/nextcloud:nginx-33', 'mwaeckerlin/nextcloud:nginx-33-20260926',
-        'mwaeckerlin/nextcloud:nginx-33-1.1.2', 'mwaeckerlin/nextcloud:nginx-33-1.1.2-20260926']},
-], pushed=['mwaeckerlin/nextcloud:nginx-33-amd64'], version='1.1.2', branch='new-33', rules=NEXTCLOUD_RULES)
+check('version_branch_gets_its_suffix', BRANCHES, 'nginx', [
+    {'source': 'mwaeckerlin/x:nginx-33', 'tags': [
+        'mwaeckerlin/x:nginx-33', 'mwaeckerlin/x:nginx-33-20260926',
+        'mwaeckerlin/x:nginx-33-1.1.2', 'mwaeckerlin/x:nginx-33-1.1.2-20260926']},
+], pushed=['mwaeckerlin/x:nginx-33-amd64'], version='1.1.2', branch='new-33', rules=BRANCH_RULES)
 
-check('main_version_branch_without_suffix', NEXTCLOUD, 'nginx', [
-    {'source': 'mwaeckerlin/nextcloud:nginx', 'tags': ['mwaeckerlin/nextcloud:nginx', 'mwaeckerlin/nextcloud:nginx-20260926']},
-], branch='new', rules=NEXTCLOUD_RULES)
+check('main_version_branch_without_suffix', BRANCHES, 'nginx', [
+    {'source': 'mwaeckerlin/x:nginx', 'tags': ['mwaeckerlin/x:nginx', 'mwaeckerlin/x:nginx-20260926']},
+], branch='new', rules=BRANCH_RULES)
 
-check('unnamed_branch_without_suffix', NEXTCLOUD, 'nginx', [
-    {'source': 'mwaeckerlin/nextcloud:nginx', 'tags': ['mwaeckerlin/nextcloud:nginx', 'mwaeckerlin/nextcloud:nginx-20260926']},
-], branch='feature-x', rules=NEXTCLOUD_RULES)
+check('unnamed_branch_without_suffix', BRANCHES, 'nginx', [
+    {'source': 'mwaeckerlin/x:nginx', 'tags': ['mwaeckerlin/x:nginx', 'mwaeckerlin/x:nginx-20260926']},
+], branch='feature-x', rules=BRANCH_RULES)
 
 check('latest_on_a_branch_becomes_the_suffix', '''
 services:
-  app: {build: ., image: mwaeckerlin/nextcloud}
+  app: {build: ., image: mwaeckerlin/x}
 ''', 'app', [
-    {'source': 'mwaeckerlin/nextcloud:33', 'tags': ['mwaeckerlin/nextcloud:33', 'mwaeckerlin/nextcloud:33-20260926']},
+    {'source': 'mwaeckerlin/x:33', 'tags': ['mwaeckerlin/x:33', 'mwaeckerlin/x:33-20260926']},
 ], branch='33', rules=[{'branch': '([0-9]+)', 'suffix': '-\\1'}])
 
 LINE_RULES = [{'branch': '([0-9]+)\\.x', 'suffix': '-\\1', 'version': 'v'},
@@ -201,18 +201,18 @@ def check_calls(name, got, expected):
         print(f'  FAIL  {name}: expected {expected}, got {got}')
 
 
-STAGE = json.dumps([['mwaeckerlin/nextcloud:nginx', 'mwaeckerlin/nextcloud:nginx-33'],
+STAGE = json.dumps([['mwaeckerlin/x:nginx', 'mwaeckerlin/x:nginx-33'],
                     ['mwaeckerlin/x:latest', 'mwaeckerlin/x:latest']])
 check_calls('arch_step_tags_and_runs_deploy', shell_step('build', 'deploy under the architecture tag',
                                                           {'STAGE': STAGE, 'ARCH': 'arm64'}), [
-    'docker tag mwaeckerlin/nextcloud:nginx mwaeckerlin/nextcloud:nginx-33-arm64',
+    'docker tag mwaeckerlin/x:nginx mwaeckerlin/x:nginx-33-arm64',
     'docker tag mwaeckerlin/x:latest mwaeckerlin/x:latest-arm64',
     'npm run deploy',
 ])
 check_calls('arch_step_pushes_without_deploy_script', shell_step('build', 'deploy under the architecture tag',
                                                                  {'STAGE': STAGE, 'ARCH': 'amd64', 'SERVICES': 'nginx php-fpm'},
                                                                  package={'scripts': {'build': 'docker compose build'}}), [
-    'docker tag mwaeckerlin/nextcloud:nginx mwaeckerlin/nextcloud:nginx-33-amd64',
+    'docker tag mwaeckerlin/x:nginx mwaeckerlin/x:nginx-33-amd64',
     'docker tag mwaeckerlin/x:latest mwaeckerlin/x:latest-amd64',
     'docker compose push nginx php-fpm',
 ])
@@ -236,7 +236,7 @@ with tempfile.TemporaryDirectory() as d:
         os.chmod(os.path.join(d, tool), 0o755)
     subprocess.run([sys.executable, '-c', branch_step['run']], check=True, capture_output=True, text=True,
                    env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'new',
-                        'BRANCH_TAGS': json.dumps(NEXTCLOUD_RULES)})
+                        'BRANCH_TAGS': json.dumps(BRANCH_RULES)})
     check_calls('weekly_run_starts_every_version_branch', open(log).read().splitlines(), [
         'gh workflow run docker.yml --ref new-32',
         'gh workflow run docker.yml --ref new-33',
