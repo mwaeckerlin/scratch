@@ -126,27 +126,22 @@ services:
     {'source': 'mwaeckerlin/nextcloud:33', 'tags': ['mwaeckerlin/nextcloud:33', 'mwaeckerlin/nextcloud:33-20260926']},
 ], branch='33', rules=[{'branch': '([0-9]+)', 'suffix': '-\\1'}])
 
-PARLWIN_RULES = [{'branch': 'nc([0-9]+)', 'suffix': '-nc\\1', 'version': 'v'},
-                 {'tag': '(nc[0-9]+-v[0-9.]+)', 'suffix': '-\\1'}]
-PARLWIN = '''
+LINE_RULES = [{'branch': '([0-9]+)\\.x', 'suffix': '-\\1', 'version': 'v'},
+              {'tag': '([0-9]+-v[0-9.]+)', 'suffix': '-\\1'}]
+LINE = '''
 services:
-  nginx: {build: ., image: mwaeckerlin/parliament-winterthur-tool:nginx}
+  app: {build: ., image: mwaeckerlin/x:app}
 '''
-check('git_tag_is_the_version', PARLWIN, 'nginx', [
-    {'source': 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18', 'tags': [
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18',
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18-20260926']},
-], pushed=['mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18-amd64'], version='1.0.0',
-    release='nc35-v1.8.18', rules=PARLWIN_RULES)
+check('git_tag_is_the_version', LINE, 'app', [
+    {'source': 'mwaeckerlin/x:app-2-v2.0.5', 'tags': ['mwaeckerlin/x:app-2-v2.0.5', 'mwaeckerlin/x:app-2-v2.0.5-20260926']},
+], pushed=['mwaeckerlin/x:app-2-v2.0.5-amd64'], version='1.0.0', release='2-v2.0.5', rules=LINE_RULES)
 
-check('branch_rule_prefixes_its_version', PARLWIN, 'nginx', [
-    {'source': 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'tags': [
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-20260926',
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.9.6',
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.9.6-20260926']},
-], version='1.9.6', branch='nc35', rules=PARLWIN_RULES)
+check('branch_rule_prefixes_its_version', LINE, 'app', [
+    {'source': 'mwaeckerlin/x:app-2', 'tags': ['mwaeckerlin/x:app-2', 'mwaeckerlin/x:app-2-20260926',
+                                          'mwaeckerlin/x:app-2-v2.1.0', 'mwaeckerlin/x:app-2-v2.1.0-20260926']},
+], version='2.1.0', branch='2.x', rules=LINE_RULES)
 
-check('git_tag_without_rule_fails', PARLWIN, None, None, release='v1.8.18', rules=PARLWIN_RULES)
+check('git_tag_without_rule_fails', LINE, None, None, release='v2.0.5', rules=LINE_RULES)
 
 check('same_image_once', '''
 services:
@@ -249,8 +244,8 @@ with tempfile.TemporaryDirectory() as d:
 
 with tempfile.TemporaryDirectory() as d:
     log = os.path.join(d, 'calls')
-    heads = ''.join(f'0000 refs/heads/{b}\\n' for b in ('master', 'nc34', 'nc35'))
-    tags = ''.join(f'0000 refs/tags/{t}\\n0000 refs/tags/{t}^{{}}\\n' for t in ('nc35-v1.8.18', 'v1.8.18', 'nc34-v1.8.18'))
+    heads = ''.join(f'0000 refs/heads/{b}\\n' for b in ('master', '1.x', '2.x'))
+    tags = ''.join(f'0000 refs/tags/{t}\\n0000 refs/tags/{t}^{{}}\\n' for t in ('2-v2.0.5', 'v2.0.5', '1-v1.4.2'))
     open(os.path.join(d, 'git'), 'w').write(
         f'#!/bin/sh\nif [ "$2" = "--tags" ]; then printf "{tags}"; else printf "{heads}"; fi\n')
     open(os.path.join(d, 'gh'), 'w').write(f'#!/bin/sh\necho "gh $*" >> {log}\n')
@@ -258,12 +253,12 @@ with tempfile.TemporaryDirectory() as d:
         os.chmod(os.path.join(d, tool), 0o755)
     subprocess.run([sys.executable, '-c', branch_step['run']], check=True, capture_output=True, text=True,
                    env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'master',
-                        'BRANCH_TAGS': json.dumps(PARLWIN_RULES)})
+                        'BRANCH_TAGS': json.dumps(LINE_RULES)})
     check_calls('weekly_run_starts_every_release_tag', open(log).read().splitlines(), [
-        'gh workflow run docker.yml --ref nc34',
-        'gh workflow run docker.yml --ref nc35',
-        'gh workflow run docker.yml --ref master -f ref=nc34-v1.8.18',
-        'gh workflow run docker.yml --ref master -f ref=nc35-v1.8.18',
+        'gh workflow run docker.yml --ref 1.x',
+        'gh workflow run docker.yml --ref 2.x',
+        'gh workflow run docker.yml --ref master -f ref=1-v1.4.2',
+        'gh workflow run docker.yml --ref master -f ref=2-v2.0.5',
     ])
 
 # A called workflow gets at most the rights of the caller's token, and GitHub

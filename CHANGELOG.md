@@ -1,7 +1,10 @@
 # Changelog
 
+- 2026-10-21 **1.1.8**
+    - The examples of the documentation and of the workflow contract name no image of another repository
+
 - 2026-10-21 **1.1.7**
-    - A rule of `branch-tags` may put a prefix before the version, so branch `nc35` of parlwin publishes `nginx-nc35-v1.9.6`, the form of its git tags
+    - A rule of `branch-tags` may put a prefix before the version, so branch `2.x` publishes `app-2-v2.1.0`, the form of its git tags
 
 - 2026-10-21 **1.1.6**
     - The input `ref` builds a git tag of a released version, a `tag` rule of `branch-tags` gives its suffix, and the weekly run rebuilds every such git tag, so a released version gets the security fixes of its base images
