@@ -126,7 +126,8 @@ services:
     {'source': 'mwaeckerlin/nextcloud:33', 'tags': ['mwaeckerlin/nextcloud:33', 'mwaeckerlin/nextcloud:33-20260926']},
 ], branch='33', rules=[{'branch': '([0-9]+)', 'suffix': '-\\1'}])
 
-PARLWIN_RULES = [{'branch': 'nc([0-9]+)', 'suffix': '-nc\\1'}, {'tag': '(nc[0-9]+-v[0-9.]+)', 'suffix': '-\\1'}]
+PARLWIN_RULES = [{'branch': 'nc([0-9]+)', 'suffix': '-nc\\1', 'version': 'v'},
+                 {'tag': '(nc[0-9]+-v[0-9.]+)', 'suffix': '-\\1'}]
 PARLWIN = '''
 services:
   nginx: {build: ., image: mwaeckerlin/parliament-winterthur-tool:nginx}
@@ -138,11 +139,11 @@ check('git_tag_is_the_version', PARLWIN, 'nginx', [
 ], pushed=['mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18-amd64'], version='1.0.0',
     release='nc35-v1.8.18', rules=PARLWIN_RULES)
 
-check('branch_rule_ignores_git_tags', PARLWIN, 'nginx', [
+check('branch_rule_prefixes_its_version', PARLWIN, 'nginx', [
     {'source': 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'tags': [
         'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-20260926',
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-1.9.6',
-        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-1.9.6-20260926']},
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.9.6',
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.9.6-20260926']},
 ], version='1.9.6', branch='nc35', rules=PARLWIN_RULES)
 
 check('git_tag_without_rule_fails', PARLWIN, None, None, release='v1.8.18', rules=PARLWIN_RULES)

@@ -54,7 +54,7 @@ on:
         type: boolean
         default: false
       branch-tags:
-        description: 'JSON list of {"branch" or "tag": <regex>, "suffix": <template>}; the first rule matching the branch, or the git tag of `ref`, appends its suffix to every tag'
+        description: 'JSON list of {"branch" or "tag": <regex>, "suffix": <template>, "version": <prefix>}; the first rule matching the branch, or the git tag of `ref`, appends its suffix to every tag and puts its optional prefix before the version'
         type: string
         default: '[]'
       ref:
@@ -108,11 +108,12 @@ jobs:
 
           release = os.environ.get('RELEASE', '')
           kind = 'tag' if release else 'branch'
-          suffix = ''
+          suffix = prefix = ''
           for rule in json.loads(os.environ.get('BRANCH_TAGS') or '[]'):
               found = kind in rule and re.fullmatch(rule[kind], os.environ.get('REF_NAME', ''))
               if found:
                   suffix = found.expand(rule['suffix'])
+                  prefix = rule.get('version', '')
                   break
           if release and not suffix:
               print(f'::error::no rule of branch-tags names the git tag {release}')
@@ -121,6 +122,8 @@ jobs:
           version = None
           if not release and os.path.exists('package.json'):
               version = json.load(open('package.json')).get('version')
+          if version:
+              version = prefix + version
 
           def tags(tag):
               """Every tag an image `repo:<tag>` is published under."""
