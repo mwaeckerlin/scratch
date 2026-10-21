@@ -38,7 +38,8 @@ assert caller['jobs']['docker']['uses'] == './.github/workflows/docker-image.yml
 passed = failed = 0
 
 
-def check(name, compose, services, publish, pushed=None, gitmodules=None, version=None, branch='master', rules=None):
+def check(name, compose, services, publish, pushed=None, gitmodules=None, version=None, branch='master', rules=None,
+          release=''):
     """Runs the selection step on a compose project and compares the services
     it builds, what it publishes under which tags, and the names compose
     resolves through the override, which are the names `docker compose push`
@@ -54,7 +55,8 @@ def check(name, compose, services, publish, pushed=None, gitmodules=None, versio
             json.dump({'name': 'x', 'version': version}, open(os.path.join(d, 'package.json'), 'w'))
         output = os.path.join(d, 'github-output')
         env = {**os.environ, 'GITHUB_OUTPUT': output, 'ARCH': 'amd64', 'RUNNER_TEMP': d,
-               'REF_NAME': branch, 'BRANCH_TAGS': json.dumps(rules or []), 'BUILD_DATE': '20260926'}
+               'REF_NAME': release or branch, 'RELEASE': release, 'BRANCH_TAGS': json.dumps(rules or []),
+               'BUILD_DATE': '20260926'}
         run = subprocess.run([sys.executable, '-c', select], cwd=d, capture_output=True, text=True, env=env)
         if run.returncode:
             got = None
@@ -124,6 +126,27 @@ services:
     {'source': 'mwaeckerlin/nextcloud:33', 'tags': ['mwaeckerlin/nextcloud:33', 'mwaeckerlin/nextcloud:33-20260926']},
 ], branch='33', rules=[{'branch': '([0-9]+)', 'suffix': '-\\1'}])
 
+PARLWIN_RULES = [{'branch': 'nc([0-9]+)', 'suffix': '-nc\\1'}, {'tag': '(nc[0-9]+-v[0-9.]+)', 'suffix': '-\\1'}]
+PARLWIN = '''
+services:
+  nginx: {build: ., image: mwaeckerlin/parliament-winterthur-tool:nginx}
+'''
+check('git_tag_is_the_version', PARLWIN, 'nginx', [
+    {'source': 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18', 'tags': [
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18',
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18-20260926']},
+], pushed=['mwaeckerlin/parliament-winterthur-tool:nginx-nc35-v1.8.18-amd64'], version='1.0.0',
+    release='nc35-v1.8.18', rules=PARLWIN_RULES)
+
+check('branch_rule_ignores_git_tags', PARLWIN, 'nginx', [
+    {'source': 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'tags': [
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35', 'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-20260926',
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-1.9.6',
+        'mwaeckerlin/parliament-winterthur-tool:nginx-nc35-1.9.6-20260926']},
+], version='1.9.6', branch='nc35', rules=PARLWIN_RULES)
+
+check('git_tag_without_rule_fails', PARLWIN, None, None, release='v1.8.18', rules=PARLWIN_RULES)
+
 check('same_image_once', '''
 services:
   one: {build: ., image: mwaeckerlin/y}
@@ -156,15 +179,18 @@ services:
 
 # The two shell steps run with stand-ins for docker and npm that only record
 # their arguments, so the test measures which tags they create and push.
-def shell_step(job, name, env):
+def shell_step(job, name, env, package=None):
     step = next(s for s in workflow['jobs'][job]['steps'] if s.get('name') == name)
-    with tempfile.TemporaryDirectory() as d:
+    with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as checkout:
         log = os.path.join(d, 'calls')
         for tool in ('docker', 'npm'):
             path = os.path.join(d, tool)
             open(path, 'w').write(f'#!/bin/sh\necho "{tool} $*" >> {log}\n')
             os.chmod(path, 0o755)
+        if package is not None:
+            json.dump(package, open(os.path.join(checkout, 'package.json'), 'w'))
         subprocess.run(['bash', '-e', '-c', step['run']], check=True, capture_output=True, text=True,
+                       cwd=checkout if package is not None else None,
                        env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], **env})
         return open(log).read().splitlines()
 
@@ -186,6 +212,13 @@ check_calls('arch_step_tags_and_runs_deploy', shell_step('build', 'deploy under 
     'docker tag mwaeckerlin/nextcloud:nginx mwaeckerlin/nextcloud:nginx-33-arm64',
     'docker tag mwaeckerlin/x:latest mwaeckerlin/x:latest-arm64',
     'npm run deploy',
+])
+check_calls('arch_step_pushes_without_deploy_script', shell_step('build', 'deploy under the architecture tag',
+                                                                 {'STAGE': STAGE, 'ARCH': 'amd64', 'SERVICES': 'nginx php-fpm'},
+                                                                 package={'scripts': {'build': 'docker compose build'}}), [
+    'docker tag mwaeckerlin/nextcloud:nginx mwaeckerlin/nextcloud:nginx-33-amd64',
+    'docker tag mwaeckerlin/x:latest mwaeckerlin/x:latest-amd64',
+    'docker compose push nginx php-fpm',
 ])
 PUBLISH = json.dumps([{'source': 'mwaeckerlin/x:latest',
                        'tags': ['mwaeckerlin/x:latest', 'mwaeckerlin/x:20260926', 'mwaeckerlin/x:1.3.2']}])
@@ -211,6 +244,25 @@ with tempfile.TemporaryDirectory() as d:
     check_calls('weekly_run_starts_every_version_branch', open(log).read().splitlines(), [
         'gh workflow run docker.yml --ref new-32',
         'gh workflow run docker.yml --ref new-33',
+    ])
+
+with tempfile.TemporaryDirectory() as d:
+    log = os.path.join(d, 'calls')
+    heads = ''.join(f'0000 refs/heads/{b}\\n' for b in ('master', 'nc34', 'nc35'))
+    tags = ''.join(f'0000 refs/tags/{t}\\n0000 refs/tags/{t}^{{}}\\n' for t in ('nc35-v1.8.18', 'v1.8.18', 'nc34-v1.8.18'))
+    open(os.path.join(d, 'git'), 'w').write(
+        f'#!/bin/sh\nif [ "$2" = "--tags" ]; then printf "{tags}"; else printf "{heads}"; fi\n')
+    open(os.path.join(d, 'gh'), 'w').write(f'#!/bin/sh\necho "gh $*" >> {log}\n')
+    for tool in ('git', 'gh'):
+        os.chmod(os.path.join(d, tool), 0o755)
+    subprocess.run([sys.executable, '-c', branch_step['run']], check=True, capture_output=True, text=True,
+                   env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'master',
+                        'BRANCH_TAGS': json.dumps(PARLWIN_RULES)})
+    check_calls('weekly_run_starts_every_release_tag', open(log).read().splitlines(), [
+        'gh workflow run docker.yml --ref nc34',
+        'gh workflow run docker.yml --ref nc35',
+        'gh workflow run docker.yml --ref master -f ref=nc34-v1.8.18',
+        'gh workflow run docker.yml --ref master -f ref=nc35-v1.8.18',
     ])
 
 # A called workflow gets at most the rights of the caller's token, and GitHub

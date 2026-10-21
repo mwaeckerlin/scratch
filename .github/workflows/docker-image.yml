@@ -54,9 +54,13 @@ on:
         type: boolean
         default: false
       branch-tags:
-        description: 'JSON list of {"branch": <regex>, "suffix": <template>}; the first rule matching the branch appends its suffix to every tag'
+        description: 'JSON list of {"branch" or "tag": <regex>, "suffix": <template>}; the first rule matching the branch, or the git tag of `ref`, appends its suffix to every tag'
         type: string
         default: '[]'
+      ref:
+        description: git tag to build in place of the branch that started the run; empty for that branch
+        type: string
+        default: ''
     secrets:
       DOCKERHUB_TOKEN:
         required: true
@@ -76,12 +80,14 @@ jobs:
           # letsencrypt for its HTTPS test); SSH submodule addresses are
           # fetched over HTTPS when no ssh-key is given
           submodules: recursive
+          ref: ${{ inputs.ref }}
       - name: select the images and tags of this repository
         id: select
         shell: python3 {0}
         env:
           ARCH: ${{ matrix.arch }}
-          REF_NAME: ${{ github.ref_name }}
+          REF_NAME: ${{ inputs.ref || github.ref_name }}
+          RELEASE: ${{ inputs.ref }}
           BRANCH_TAGS: ${{ inputs.branch-tags }}
           # set by the tests only; a run uses the day it runs
           BUILD_DATE: ""
@@ -100,14 +106,21 @@ jobs:
                   capture_output=True, text=True).stdout.splitlines()
               submodules = [line.split(' ', 1)[1] for line in lines]
 
+          release = os.environ.get('RELEASE', '')
+          kind = 'tag' if release else 'branch'
           suffix = ''
           for rule in json.loads(os.environ.get('BRANCH_TAGS') or '[]'):
-              found = re.fullmatch(rule['branch'], os.environ.get('REF_NAME', ''))
+              found = kind in rule and re.fullmatch(rule[kind], os.environ.get('REF_NAME', ''))
               if found:
                   suffix = found.expand(rule['suffix'])
                   break
+          if release and not suffix:
+              print(f'::error::no rule of branch-tags names the git tag {release}')
+              sys.exit(1)
           date = os.environ.get('BUILD_DATE') or datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%d')
-          version = json.load(open('package.json')).get('version') if os.path.exists('package.json') else None
+          version = None
+          if not release and os.path.exists('package.json'):
+              version = json.load(open('package.json')).get('version')
 
           def tags(tag):
               """Every tag an image `repo:<tag>` is published under."""
@@ -183,6 +196,7 @@ jobs:
       - name: deploy under the architecture tag
         env:
           STAGE: ${{ steps.select.outputs.stage }}
+          SERVICES: ${{ steps.select.outputs.services }}
           ARCH: ${{ matrix.arch }}
           COMPOSE_FILE: ${{ steps.select.outputs.compose-files }}
           COMPOSE_PATH_SEPARATOR: ":"
@@ -190,7 +204,11 @@ jobs:
           for pair in $(echo "$STAGE" | jq -r '.[] | .[0] + "=" + .[1]'); do
             docker tag "${pair%%=*}" "${pair#*=}-$ARCH"
           done
-          npm run deploy
+          if jq -e '.scripts.deploy' package.json > /dev/null 2>&1; then
+            npm run deploy
+          else
+            docker compose push $SERVICES
+          fi
 
   deploy:
     needs: build
@@ -242,6 +260,16 @@ jobs:
                                  capture_output=True, text=True).stdout.split()
           branches = [ref.removeprefix('refs/heads/') for ref in heads if ref.startswith('refs/heads/')]
           for branch in sorted(branches):
-              if branch != os.environ['REF_NAME'] and any(re.fullmatch(r['branch'], branch) for r in rules):
+              if branch != os.environ['REF_NAME'] and any('branch' in r and re.fullmatch(r['branch'], branch) for r in rules):
                   print('rebuild', branch)
                   subprocess.run(['gh', 'workflow', 'run', 'docker.yml', '--ref', branch], check=True)
+          if any('tag' in r for r in rules):
+              refs = subprocess.run(['git', 'ls-remote', '--tags', 'origin'], check=True,
+                                    capture_output=True, text=True).stdout.split()
+              tags = {ref.removeprefix('refs/tags/') for ref in refs
+                      if ref.startswith('refs/tags/') and not ref.endswith('^{}')}
+              for tag in sorted(tags):
+                  if any('tag' in r and re.fullmatch(r['tag'], tag) for r in rules):
+                      print('rebuild', tag)
+                      subprocess.run(['gh', 'workflow', 'run', 'docker.yml', '--ref', os.environ['REF_NAME'],
+                                      '-f', f'ref={tag}'], check=True)

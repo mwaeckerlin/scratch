@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-21 **1.1.6**
+    - The input `ref` builds a git tag of a released version, a `tag` rule of `branch-tags` gives its suffix, and the weekly run rebuilds every such git tag, so a released version gets the security fixes of its base images
+
 - 2026-09-26 **1.1.5**
     - The documentation of `free-disk` gives the measured disk space of the runners in place of an outdated size
 
