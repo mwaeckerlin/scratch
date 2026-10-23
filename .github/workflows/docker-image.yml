@@ -396,6 +396,7 @@ jobs:
                       reasons.append(f'{published} is not published yet')
                       continue
                   labels = (image.get('config') or {}).get('Labels') or {}
+                  print(f'{published} carries the labels: {", ".join(sorted(labels)) or "none"}')
                   if PARENTS not in labels:
                       reasons.append(f'{published} carries no record of its sources')
                       continue
@@ -432,20 +433,25 @@ jobs:
       - *checkout
       - *select
       - name: label the images with the sources they are built from
-        id: label
         shell: python3 {0}
         env:
           RECORD: ${{ needs.check.outputs.record }}
           SERVICES: ${{ steps.select.outputs.services }}
           COMPOSE_FILES: ${{ steps.select.outputs.compose-files }}
         run: |
-          import json, os
+          # the override compose reads by itself, so that every build of the
+          # job carries the labels, also the one the test command runs
+          import json, os, sys
+          compose = os.environ['COMPOSE_FILES'].split(':', 1)[0]
+          name = 'compose.override.yaml' if os.path.basename(compose).startswith('compose.') else 'docker-compose.override.yml'
+          path = os.path.join(os.path.dirname(compose), name)
+          if os.path.exists(path):
+              print(f'::error::{path} exists; the labels of the sources need it')
+              sys.exit(1)
           labels = {k: v.replace('$', '$$') for k, v in json.loads(os.environ.get('RECORD') or '{}').items()}
-          path =os.path.join(os.environ['RUNNER_TEMP'], 'docker-compose.labels.yml')
           with open(path, 'w') as out:
               json.dump({'services': {s: {'build': {'labels': labels}} for s in os.environ['SERVICES'].split()}}, out, indent=2)
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write(f"compose-files={os.environ['COMPOSE_FILES'].split(':', 1)[0]}:{path}\n")
+          print('labels', *labels, 'in', path)
       - name: free disk space
         if: inputs.free-disk
         run: |
@@ -454,9 +460,6 @@ jobs:
           docker system prune --all --force
           df -h /
       - name: build
-        env:
-          COMPOSE_FILE: ${{ steps.label.outputs.compose-files }}
-          COMPOSE_PATH_SEPARATOR: ":"
         run: docker compose build ${{ steps.select.outputs.services }}
       - name: install the development dependencies
         if: inputs.test != '' && hashFiles('package-lock.json') != ''

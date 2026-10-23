@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-23 **1.1.12**
+    - The published image carries the record of its sources also where the tests build the image once more, so the hourly check no longer builds every time; the check names the labels it finds on the published image
+
 - 2026-10-22 **1.1.11**
     - A scheduled run builds only when a parent image or a download of an image changed, or when the published image is a week old, and prints why; every image records the sources it was built from, so the run can check every hour without building in vain
     - Every scheduled run enables its own workflow through the GitHub API against the disabling of scheduled workflows after 60 days without activity; whether that resets the 60 days, GitHub does not document; callers grant `actions: write` for it

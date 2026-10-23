@@ -40,8 +40,6 @@ def step(job, key, value):
 
 SELECT = step('check', 'id', 'select')['run']
 DECIDE = step('check', 'id', 'decide')['run']
-LABEL = step('build', 'name', 'label the images with the sources they are built from')['run']
-PUSH = step('build', 'name', 'deploy under the architecture tag')['run']
 JOIN = step('deploy', 'name', 'join the architectures into all tags')['run']
 REGISTRY = f"localhost:{os.environ['REGISTRY_PORT']}"
 WEB = f"http://127.0.0.1:{os.environ['WEB_PORT']}"
@@ -170,7 +168,10 @@ ADD {WEB}/file /file
 RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool
 FROM scratch
 COPY --from=build /content /content
-''', 'Dockerfile.tool': f'FROM {REGISTRY}/x/parent:latest\n'})
+''', 'Dockerfile.tool': f'FROM {REGISTRY}/x/parent:latest\n',
+                     'package.json': json.dumps({'name': 'x', 'scripts': {
+                         'build': 'docker compose build', 'test': 'npm run build',
+                         'deploy': 'docker compose push app tool'}})})
     # the project whose Dockerfiles are only read
     write(reading, {'docker-compose.yml': COMPOSE, 'Dockerfile': f'''# a stage, scratch and an image of this repository are no parents
 ARG BASE={REGISTRY}/x/parent
@@ -205,24 +206,39 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         result = outputs(output)
         return result['build'] == 'true', json.loads(result['record']), run.stdout
 
+    def run_step(job, name, context):
+        """Runs a step of the workflow with its own env, its expressions filled from `context`, in a fresh
+        checkout of the project; returns what it writes to GITHUB_OUTPUT."""
+        found = step(job, 'name', name)
+
+        def resolve(text):
+            return re.sub(r'\$\{\{\s*(.*?)\s*\}\}', lambda m: context.get(m.group(1), ''), str(text))
+
+        output = os.path.join(temp, 'step-output')
+        open(output, 'w').close()
+        env = {**os.environ, 'RUNNER_TEMP': temp, 'GITHUB_OUTPUT': output,
+               **{k: resolve(v) for k, v in (found.get('env') or {}).items()}}
+        command = [sys.executable, '-c'] if found.get('shell', '').startswith('python3') else ['bash', '-e', '-c']
+        execute([*command, resolve(found['run'])], cwd=project, env=env)
+        return outputs(output)
+
     def publish(record=None):
-        """Builds, pushes and joins the images the way a run does, labelled with the record where one is given."""
+        """Builds, tests, pushes and joins the images through the steps of a run, labelled with the record, or with
+        none, as an image published before the check; the test command of the project builds the images once more,
+        as `npm test` does in the family."""
+        for leftover in ('docker-compose.override.yml', 'compose.override.yaml'):
+            if os.path.exists(os.path.join(project, leftover)):
+                os.remove(os.path.join(project, leftover))
         chosen = select()
-        build_files = 'docker-compose.yml'
-        if record is not None:
-            labelled = os.path.join(temp, 'label-output')
-            open(labelled, 'w').close()
-            execute([sys.executable, '-c', LABEL],
-                    env={**os.environ, 'RECORD': json.dumps(record), 'SERVICES': chosen['services'],
-                         'COMPOSE_FILES': chosen['compose-files'], 'RUNNER_TEMP': temp, 'GITHUB_OUTPUT': labelled})
-            build_files = outputs(labelled)['compose-files']
-        execute(['docker', 'compose', 'build', *chosen['services'].split()], cwd=project,
-                env={**os.environ, 'COMPOSE_FILE': build_files, 'COMPOSE_PATH_SEPARATOR': ':'})
+        context = {'matrix.arch': 'amd64', 'inputs.test': 'npm test', **{f'steps.select.outputs.{k}': v for k, v in chosen.items()}}
+        context['needs.check.outputs.record'] = json.dumps(record or {})
+        context.update({f'steps.label.outputs.{k}': v for k, v in
+                        run_step('build', 'label the images with the sources they are built from', context).items()})
+        run_step('build', 'build', context)
         for image, staging in json.loads(chosen['stage']):
             local_images.update((image, f'{staging}-amd64'))
-        execute(['bash', '-e', '-c', PUSH], cwd=project,
-                env={**os.environ, 'COMPOSE_FILE': chosen['compose-files'], 'COMPOSE_PATH_SEPARATOR': ':',
-                     'STAGE': chosen['stage'], 'SERVICES': chosen['services'], 'ARCH': 'amd64'})
+        run_step('build', 'test', context)
+        run_step('build', 'deploy under the architecture tag', context)
         execute(['bash', '-e', '-c', JOIN], env={**os.environ, 'PUBLISH': chosen['publish'], 'ARCHITECTURES': 'amd64'})
 
     def published_labels(tag):
@@ -254,6 +270,8 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         publish()
         build, _, out = decide()
         check('image_without_record_builds', build is True and 'carries no record of its sources' in out, out)
+        named = re.search(f'{re.escape(REGISTRY)}/x/app:latest carries the labels: (.*)', out)
+        check('check_names_missing_labels', named is not None and PARENTS not in named.group(1), out)
 
         publish(record)
         check('record_round_trip_through_the_labels',
@@ -263,6 +281,9 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         build, again, out = decide()
         after = manifest_requests()
         check('unchanged_sources_do_not_build', build is False and again == record, out)
+        named = re.search(f'{re.escape(REGISTRY)}/x/app:latest carries the labels: (.*)', out)
+        check('check_names_the_labels_it_reads',
+              named is not None and PARENTS in named.group(1) and DOWNLOADS in named.group(1), out)
         gets, heads = after[0] - before[0], after[1] - before[1]
         check('lookups_stay_within_the_pull_budget', gets <= 1 + 3 * 2,
               f'{gets} GET and {heads} HEAD manifest requests for one parent and two published images')
