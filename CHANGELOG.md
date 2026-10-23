@@ -1,5 +1,9 @@
 # Changelog
 
+- 2026-10-22 **1.1.11**
+    - A scheduled run builds only when a parent image or a download of an image changed, or when the published image is a week old, and prints why; every image records the sources it was built from, so the run can check every hour without building in vain
+    - Every scheduled run enables its own workflow through the GitHub API against the disabling of scheduled workflows after 60 days without activity; whether that resets the 60 days, GitHub does not document; callers grant `actions: write` for it
+
 - 2026-10-21 **1.1.10**
     - Before a build overwrites a tag, the image it replaces gets the tag with the day it was built, so an earlier version stays reachable for a revert also where it was published without a date
 

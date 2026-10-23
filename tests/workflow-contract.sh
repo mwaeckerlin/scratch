@@ -251,9 +251,9 @@ esac
         'docker buildx imagetools create -t mwaeckerlin/x:app-20260923 mwaeckerlin/x:app',
     ])
 
-# The weekly run starts the workflow on every version branch a rule names, and
-# on no other; git answers with a fixed list of branches.
-branch_step = next(s for s in workflow['jobs']['branches']['steps'] if s.get('name', '').startswith('start the weekly'))
+# The scheduled run starts the workflow on every version branch a rule names,
+# and on no other; git answers with a fixed list of branches.
+branch_step = next(s for s in workflow['jobs']['branches']['steps'] if s.get('name', '').startswith('start the scheduled'))
 with tempfile.TemporaryDirectory() as d:
     log = os.path.join(d, 'calls')
     heads = ''.join(f'0000 refs/heads/{b}\\n' for b in ('master', 'new', 'new-32', 'new-33', 'feature-x', '33'))
@@ -264,7 +264,7 @@ with tempfile.TemporaryDirectory() as d:
     subprocess.run([sys.executable, '-c', branch_step['run']], check=True, capture_output=True, text=True,
                    env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'new',
                         'BRANCH_TAGS': json.dumps(BRANCH_RULES)})
-    check_calls('weekly_run_starts_every_version_branch', open(log).read().splitlines(), [
+    check_calls('scheduled_run_starts_every_version_branch', open(log).read().splitlines(), [
         'gh workflow run docker.yml --ref new-32',
         'gh workflow run docker.yml --ref new-33',
     ])
@@ -281,7 +281,7 @@ with tempfile.TemporaryDirectory() as d:
     subprocess.run([sys.executable, '-c', branch_step['run']], check=True, capture_output=True, text=True,
                    env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'master',
                         'BRANCH_TAGS': json.dumps(LINE_RULES)})
-    check_calls('weekly_run_starts_every_release_tag', open(log).read().splitlines(), [
+    check_calls('scheduled_run_starts_every_release_tag', open(log).read().splitlines(), [
         'gh workflow run docker.yml --ref 1.x',
         'gh workflow run docker.yml --ref 2.x',
         'gh workflow run docker.yml --ref master -f ref=1-v1.4.2',
@@ -296,9 +296,24 @@ with tempfile.TemporaryDirectory() as d:
 check_calls('no_job_asks_for_its_own_rights',
             [job for job, body in workflow['jobs'].items() if 'permissions' in body], [])
 
-# A test may build an image from a submodule (reverse-proxy builds
-# letsencrypt for its HTTPS test); without the submodules the checkout has no
-# Dockerfile there and the test fails before it starts.
+# Every scheduled run enables the calling workflow through the API; a token
+# without `actions: write` leaves a warning and fails nothing.
+keep_alive = next(s for s in workflow['jobs']['check']['steps'] if s.get('name') == 'keep the scheduled workflow enabled')
+check_calls('keep_alive_runs_on_schedule', keep_alive.get('if'), "github.event_name == 'schedule'")
+for name, answer, expected in (('keep_alive_enables_the_calling_workflow', 0, 0),
+                               ('keep_alive_without_rights_warns', 1, 0)):
+    with tempfile.TemporaryDirectory() as d:
+        log = os.path.join(d, 'calls')
+        open(os.path.join(d, 'gh'), 'w').write(f'#!/bin/sh\necho "gh $*" >> {log}\nexit {answer}\n')
+        os.chmod(os.path.join(d, 'gh'), 0o755)
+        run = subprocess.run(['bash', '-e', '-c', keep_alive['run']], capture_output=True, text=True,
+                             env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REPOSITORY': 'mwaeckerlin/x',
+                                  'WORKFLOW_REF': 'mwaeckerlin/x/.github/workflows/docker.yml@refs/heads/master'})
+        check_calls(name, (open(log).read().splitlines(), run.returncode, '::warning::' in run.stdout),
+                    (['gh api -X PUT repos/mwaeckerlin/x/actions/workflows/docker.yml/enable'], expected, bool(answer)))
+
+# A test may build an image from a submodule; without the submodules the
+# checkout has no Dockerfile there and the test fails before it starts.
 checkout = next(s for s in workflow['jobs']['build']['steps'] if s.get('uses', '').startswith('actions/checkout'))
 check_calls('build_checkout_includes_submodules', (checkout.get('with') or {}).get('submodules'), 'recursive')
 

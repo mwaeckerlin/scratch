@@ -64,7 +64,7 @@ Internally used system variables:
 
 ## Publishing on Docker Hub
 
-Every image repository of the family builds and publishes its images with the reusable GitHub Actions workflow [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml) of this repository. On every push to the default branch, on a weekly schedule and on a manual start it:
+Every image repository of the family builds and publishes its images with the reusable GitHub Actions workflow [`.github/workflows/docker-image.yml`](.github/workflows/docker-image.yml) of this repository. On every push to the default branch, on a manual start, and in an hourly scheduled run when a source of the images changed (see [Source check](#source-check)), it:
 
 1. builds every service of `docker-compose.yml` that has both `build` and `image`, with `docker compose build`; a service whose build context lies in a git submodule is left to the submodule's own repository
 2. does this on a native runner per architecture, `linux/amd64` on `ubuntu-24.04` and `linux/arm64` on `ubuntu-24.04-arm`, without emulation
@@ -83,7 +83,7 @@ Every image is published under its tag, the date of the build (UTC) and, where `
 
 Before the new image takes a tag, the image that carried it gets the same tag with the day it was built, `20180304` for `latest` and `inotify-20180304` for `inotify`, unless such a tag already exists. An image published before the date tags existed stays reachable for a revert.
 
-A repository that builds several versions from branches names its branches in `branch-tags`: the first rule whose `branch` (a Python regular expression, matched in full) fits the branch name appends its `suffix` to every tag. With the rules `[{"branch": "new-([0-9]+)", "suffix": "-\\1"}, {"branch": "new", "suffix": ""}]`, branch `new-33` publishes `nginx-33`, `nginx-33-20260926`, `nginx-33-1.1.2` and `nginx-33-1.1.2-20260926`. GitHub starts scheduled runs on the default branch only, so there the job `branches` starts the workflow `docker.yml` on every other branch a rule names; the weekly rebuild thereby reaches every version.
+A repository that builds several versions from branches names its branches in `branch-tags`: the first rule whose `branch` (a Python regular expression, matched in full) fits the branch name appends its `suffix` to every tag. With the rules `[{"branch": "new-([0-9]+)", "suffix": "-\\1"}, {"branch": "new", "suffix": ""}]`, branch `new-33` publishes `nginx-33`, `nginx-33-20260926`, `nginx-33-1.1.2` and `nginx-33-1.1.2-20260926`. GitHub starts scheduled runs on the default branch only, so there the job `branches` starts the workflow `docker.yml` on every other branch a rule names; the hourly check thereby reaches every version.
 
 Every step must succeed: a failed build, test or push stops the run, and the plain tag keeps the last version that passed on every architecture. A repository that builds nothing of its own fails the run with an error.
 
@@ -100,7 +100,7 @@ on:
   push:
     branches: [master]
   schedule:
-    - cron: "17 5 * * 1"
+    - cron: "17 * * * *"
   workflow_dispatch:
 
 concurrency: docker-${{ github.ref_name }}
@@ -108,10 +108,15 @@ concurrency: docker-${{ github.ref_name }}
 jobs:
   docker:
     uses: mwaeckerlin/scratch/.github/workflows/docker-image.yml@master
+    permissions:
+      actions: write
+      contents: read
     secrets: inherit
 ```
 
-The weekly rebuild runs on Monday, one hour per level after the images a repository is built on: `mwaeckerlin/scratch` and `mwaeckerlin/ubuntu-base` at 03:17, `mwaeckerlin/very-base` at 04:17, the images built on `very-base` at 05:17, and so on. That way each rebuild finds the security fixes of its base.
+`actions: write` lets the scheduled run enable the workflow `docker.yml` of the repository through the GitHub API (see [Keep-alive](#keep-alive)); without it the run leaves a warning and builds as before.
+
+Every repository uses the same hourly schedule. The scheduled run builds only when a source changed, so no repository needs a clock time after the images it is built on: a child sees a new parent image within the hour after the parent's run published it, and a chain of seven levels is through in about seven to eight hours.
 
 A repository that deviates adds a `with:` block:
 
@@ -124,14 +129,14 @@ A repository that deviates adds a `with:` block:
 
 - `test`: command that tests the built images; the run stops before the push when it fails; default: `npm test`, empty for none
 - `architectures`: JSON list of the architectures; default: `["amd64", "arm64"]`
-- `branch-tags`: JSON list of `{"branch": <regex>, "suffix": <template>}` for repositories with version branches; default: `[]`. Such a caller also runs on those branches and grants the weekly job `actions: write`:
+- `branch-tags`: JSON list of `{"branch": <regex>, "suffix": <template>}` for repositories with version branches; default: `[]`. Such a caller also runs on those branches and grants the job `branches` `actions: write`:
 
   ```yaml
   on:
     push:
       branches: [master, new, "new-*"]
     schedule:
-      - cron: "17 6 * * 1"
+      - cron: "17 * * * *"
     workflow_dispatch:
 
   concurrency: docker-${{ github.ref_name }}
@@ -149,9 +154,31 @@ A repository that deviates adds a `with:` block:
 
   The same file stands on every one of those branches, and the scheduled run of the default branch starts the others.
 
-  A rule may carry `"version": "v"`, which puts `v` before the version: branch `2.x` with `{"branch": "([0-9]+)\\.x", "suffix": "-\\1", "version": "v"}` publishes `app-2-v2.1.0`. A rule with `tag` in place of `branch` names git tags of released versions: with `{"tag": "([0-9]+-v[0-9.]+)", "suffix": "-\\1"}`, the input `ref: 2-v2.0.5` builds that git tag and publishes `app-2-v2.0.5` and `app-2-v2.0.5-20261021`, without the version of `package.json`, because the git tag is the version. The weekly run starts `docker.yml` of the default branch with `ref` for every git tag such a rule names, so the caller passes its own dispatch input `ref` on. A git tag older than the `deploy` script is pushed with `docker compose push` of its services.
+  A rule may carry `"version": "v"`, which puts `v` before the version: branch `2.x` with `{"branch": "([0-9]+)\\.x", "suffix": "-\\1", "version": "v"}` publishes `app-2-v2.1.0`. A rule with `tag` in place of `branch` names git tags of released versions: with `{"tag": "([0-9]+-v[0-9.]+)", "suffix": "-\\1"}`, the input `ref: 2-v2.0.5` builds that git tag and publishes `app-2-v2.0.5` and `app-2-v2.0.5-20261021`, without the version of `package.json`, because the git tag is the version. The scheduled run starts `docker.yml` of the default branch with `ref` for every git tag such a rule names, so the caller passes its own dispatch input `ref` on. A git tag older than the `deploy` script is pushed with `docker compose push` of its services.
 - `ref`: git tag to build in place of the branch that started the run; default: empty
 - `free-disk`: removes the preinstalled SDKs of the runner (.NET, Android, Haskell, the tool cache) and the preloaded Docker images before the build; measured on 2026-09-26, the runners have a 145GB root with 87GB (amd64) and 108GB (arm64) free, and the clean-up raises that to 114GB and 123GB; default: `false`
+- `rebuild-days`: a scheduled run builds an image whose sources are unchanged once it is this many days old; default: `7`
+
+### Source check
+
+A push, a manual start and a git tag release always build. A scheduled run, and a run the scheduled run starts on a version branch or for a git tag, first runs the job `check`, which compares the sources of the images with what the published images were built from, prints every difference, and starts the build only where one exists:
+
+| Source | What the check compares |
+| --- | --- |
+| Parent image | the digest of every image a Dockerfile of the compose file names in `FROM` or `COPY --from`, with the defaults of a global `ARG` and the `args` of the compose file filled in; stage names, `scratch` and the images the compose file builds itself are no parents |
+| Download | every literal address in `ADD` and in a `RUN` that calls `wget` or `curl`: an address below `/releases/latest`, the form of GitHub, by the release the redirect names; any other address by the `ETag` or `Last-Modified` of a HEAD request |
+| Age | the published image is rebuilt once it is `rebuild-days` old |
+| Published image | an image that is not published yet, or was published without a record of its sources, is built |
+
+Packages that `apk`, `apt`, `npm`, `pip` or `composer` install are not compared one by one: the final images carry no package database, the `docker compose build` of the workflow writes no SBOM attestation, and the build stages that do carry the database are not reachable from the workflow. The build after `rebuild-days` covers them, and so it covers an address that a `RUN` assembles in shell code, which the check names in its output.
+
+Each build records its sources as the image labels `org.mwaeckerlin.parents` and `org.mwaeckerlin.downloads`, JSON objects from parent to digest and from address to version, through a compose override the workflow writes for the build. The check reads them, and the build time, from the image configuration of the first platform of the published image. Annotations of the published index cannot carry them: `docker buildx imagetools create` joins images that `docker compose push` pushed in the Docker media types into a Docker manifest list, which has no annotations, and drops them without an error.
+
+Every registry request of the check goes through `docker buildx imagetools inspect`, logged in with `DOCKERHUB_TOKEN`. Docker Hub counts a GET of a manifest as a pull and a HEAD as none ([Docker Hub pull usage and limits](https://docs.docker.com/docker-hub/usage/pulls/)). `imagetools inspect` resolves the tag with a HEAD and then fetches the manifest with a GET, so each parent image costs one pull, and each published image at most three: the manifest list, then the manifest and the configuration of one platform. A Docker Hub Personal account has 200 pulls per six hours, the paid accounts have no limit ([Docker Hub usage and limits](https://docs.docker.com/docker-hub/usage/)).
+
+### Keep-alive
+
+GitHub disables the scheduled workflows of a public repository after 60 days without activity in it ([Disabling and enabling a workflow](https://docs.github.com/en/actions/managing-workflow-runs-and-deployments/managing-workflow-runs/disabling-and-enabling-a-workflow)). A push counts as activity. Each scheduled run therefore enables its own calling workflow with `gh api -X PUT repos/<owner>/<repository>/actions/workflows/docker.yml/enable`, which needs the `actions: write` the caller grants. Whether this call resets the 60 days, GitHub does not document. A workflow that was disabled anyway is enabled again with `gh workflow enable docker.yml --repo <owner>/<repository>`.
 
 ### Setup
 
@@ -161,8 +188,8 @@ Docker Hub and GitHub need one access token, stored in every image repository:
 2. Store it as the secret `DOCKERHUB_TOKEN` in every repository. With the GitHub CLI, the token is read once, without echo, and never appears on a command line:
 
    ```bash
-   $ read -rs DOCKERHUB_TOKEN
-   $ for repo in scratch very-base build; do printf %s "$DOCKERHUB_TOKEN" | gh secret set DOCKERHUB_TOKEN --repo mwaeckerlin/$repo; done
+   read -rs DOCKERHUB_TOKEN
+   for repo in scratch very-base build; do printf %s "$DOCKERHUB_TOKEN" | gh secret set DOCKERHUB_TOKEN --repo mwaeckerlin/$repo; done
    ```
 
    In the web interface: repository → «Settings» → «Secrets and variables» → «Actions» → «New repository secret».

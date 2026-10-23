@@ -27,10 +27,24 @@
 # pulls the variant that fits the host. Any failure stops the run before a
 # published tag changes.
 #
+# A push, a manual start and a git tag release always build. A scheduled run,
+# and a run the scheduled run starts on a version branch, first runs the job
+# `check`, which builds only when a source of an image changed since the
+# published image was built: the digest of a parent image named in `FROM` or
+# `COPY --from`, a download named literally in `ADD` or in a `RUN` with wget or
+# curl, or when the published image is older than `rebuild-days`, which
+# covers the packages. Every build records its sources as labels in the
+# image, which the next check reads.
+#
+# GitHub disables the scheduled workflows of a public repository after 60
+# days without activity. Each scheduled run therefore enables its calling
+# workflow through the API, with the `actions: write` the caller grants;
+# whether that resets the 60 days, GitHub does not document.
+#
 # GitHub starts scheduled runs on the default branch only. With `branch-tags`,
 # the scheduled run therefore starts the workflow `docker.yml` on every other
-# branch that matches a rule, so the weekly rebuild reaches every version; the
-# caller grants `actions: write` for that.
+# branch that matches a rule, so the check reaches every version; the caller
+# grants `actions: write` for that.
 #
 # Needs in the calling repository: the secret DOCKERHUB_TOKEN, a Docker Hub
 # access token with read and write. The Docker Hub user is the variable
@@ -61,27 +75,30 @@ on:
         description: git tag to build in place of the branch that started the run; empty for that branch
         type: string
         default: ''
+      rebuild-days:
+        description: a scheduled run builds an image whose sources are unchanged once it is this many days old, for the packages the check does not compare
+        type: number
+        default: 7
     secrets:
       DOCKERHUB_TOKEN:
         required: true
 
 jobs:
-  build:
-    strategy:
-      matrix:
-        arch: ${{ fromJSON(inputs.architectures) }}
-    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+  check:
+    runs-on: ubuntu-24.04
     outputs:
-      publish: ${{ steps.select.outputs.publish }}
+      build: ${{ steps.decide.outputs.build }}
+      record: ${{ steps.decide.outputs.record }}
     steps:
-      - uses: actions/checkout@v5
+      - &checkout
+        uses: actions/checkout@v5
         with:
-          # a test may build an image from a submodule (reverse-proxy builds
-          # letsencrypt for its HTTPS test); SSH submodule addresses are
-          # fetched over HTTPS when no ssh-key is given
+          # a test may build an image from a submodule; SSH submodule
+          # addresses are fetched over HTTPS when no ssh-key is given
           submodules: recursive
           ref: ${{ inputs.ref }}
-      - name: select the images and tags of this repository
+      - &select
+        name: select the images and tags of this repository
         id: select
         shell: python3 {0}
         env:
@@ -175,6 +192,260 @@ jobs:
               output.write(f"stage={json.dumps(stage)}\n")
               output.write(f"publish={json.dumps(publish)}\n")
               output.write(f"compose-files={compose}:{override_file}\n")
+      - name: keep the scheduled workflow enabled
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          workflow="${WORKFLOW_REF%@*}"
+          workflow="${workflow##*/}"
+          gh api -X PUT "repos/$REPOSITORY/actions/workflows/$workflow/enable" \
+            || echo "::warning::$workflow cannot be enabled through the API; the caller grants actions: write for that"
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - uses: docker/setup-buildx-action@v4
+      - name: decide whether a source of the images changed
+        id: decide
+        shell: python3 {0}
+        env:
+          SERVICES: ${{ steps.select.outputs.services }}
+          PUBLISH: ${{ steps.select.outputs.publish }}
+          EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
+          REBUILD_DAYS: ${{ inputs.rebuild-days }}
+          # set by the tests only; a run compares with the moment it runs
+          NOW: ""
+        run: |
+          import datetime, hashlib, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
+
+          PARENTS, DOWNLOADS = 'org.mwaeckerlin.parents', 'org.mwaeckerlin.downloads'
+          VARIABLE = re.compile(r'\$\{(\w+)(?::-([^}]*))?\}|\$(\w+)')
+          URL = re.compile(r'https?://[^\s\'"`;|&()<>]+')
+
+
+          def expand(value, scope):
+              def replace(match):
+                  name = match.group(1) or match.group(3)
+                  if scope.get(name):
+                      return scope[name]
+                  return match.group(2) if match.group(2) is not None else match.group(0)
+              return VARIABLE.sub(replace, value)
+
+
+          def normalize(reference):
+              name = reference.split('@', 1)[0]
+              return reference if '@' in reference or ':' in name.rsplit('/', 1)[-1] else reference + ':latest'
+
+
+          def instructions(text):
+              """Every instruction of a Dockerfile as (keyword, arguments), continuation lines joined."""
+              current = ''
+              for line in text.splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  if line.endswith('\\'):
+                      current += line[:-1] + ' '
+                      continue
+                  words = (current + line).split(None, 1)
+                  current = ''
+                  yield words[0].upper(), words[1] if len(words) > 1 else ''
+              if current.strip():
+                  words = current.split(None, 1)
+                  yield words[0].upper(), words[1] if len(words) > 1 else ''
+
+
+          def manifest(reference):
+              """The raw manifest a registry serves for the reference, None where it has none."""
+              run = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', reference, '--raw'], capture_output=True)
+              if run.returncode == 0:
+                  return run.stdout
+              error = run.stderr.decode(errors='replace').strip()
+              if 'not found' in error.lower():
+                  return None
+              print(f'::error::{reference} cannot be looked up: {error}')
+              sys.exit(1)
+
+
+          class Unfollowed(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+
+
+          opener = urllib.request.build_opener(Unfollowed)
+
+
+          def identify(url):
+              """What tells this version of the download from the next, None where the server says nothing."""
+              address = url
+              for _ in range(10):
+                  try:
+                      response = opener.open(urllib.request.Request(address, method='HEAD'), timeout=30)
+                      status, headers = response.status, response.headers
+                  except urllib.error.HTTPError as error:
+                      status, headers = error.code, error.headers
+                  except (urllib.error.URLError, OSError) as error:
+                      print(f'{url}: no answer, {error}')
+                      return None
+                  if 300 <= status < 400 and headers.get('Location'):
+                      target = urllib.parse.urljoin(address, headers['Location'])
+                      if '/releases/latest' in urllib.parse.urlsplit(address).path:
+                          return 'release ' + target
+                      address = target
+                      continue
+                  if status >= 400:
+                      print(f'{url}: answers {status}')
+                      return None
+                  return headers.get('ETag') or headers.get('Last-Modified')
+              return None
+
+
+          services = json.loads(subprocess.run(['docker', 'compose', 'config', '--format', 'json'],
+                                               check=True, capture_output=True, text=True).stdout).get('services', {})
+          own = {normalize(s['image']) for s in services.values() if 'build' in s and s.get('image')}
+          parents, downloads = set(), set()
+          for name in os.environ['SERVICES'].split():
+              build = services[name]['build']
+              if 'dockerfile_inline' in build:
+                  path, text = f'{name} (inline)', build['dockerfile_inline']
+              else:
+                  path = os.path.join(build.get('context', '.'), build.get('dockerfile', 'Dockerfile'))
+                  text = open(path).read()
+              args = {k: v for k, v in (build.get('args') or {}).items() if v is not None}
+              scope, stages, started = dict(args), set(), False
+              for keyword, arguments in instructions(text):
+                  references, stage = [], None
+                  if keyword == 'ARG' and not started:
+                      for definition in arguments.split():
+                          key, given, default = definition.partition('=')
+                          if given and key not in args:
+                              scope[key] = default.strip('"\'')
+                  elif keyword == 'FROM':
+                      started = True
+                      words = [w for w in arguments.split() if not w.startswith('--')]
+                      references = [expand(words[0], scope)]
+                      if len(words) == 3 and words[1].lower() == 'as':
+                          stage = words[2].lower()
+                  elif keyword in ('COPY', 'ADD'):
+                      references = [expand(w[len('--from='):], scope) for w in arguments.split() if w.startswith('--from=')]
+                  for reference in references:
+                      if reference.lower() in stages or reference == 'scratch' or reference.isdigit():
+                          continue
+                      if '$' in reference:
+                          print(f'{path}: {reference} cannot be read from the Dockerfile')
+                      elif normalize(reference) not in own:
+                          parents.add(normalize(reference))
+                  if stage:
+                      stages.add(stage)
+                  if keyword == 'ADD' or (keyword == 'RUN' and re.search(r'\b(wget|curl)\b', arguments)):
+                      for url in URL.findall(arguments):
+                          if '$' in url:
+                              print(f'{path}: {url} is assembled in shell code, the build after {os.environ.get("REBUILD_DAYS") or 7} days covers it')
+                          else:
+                              downloads.add(url)
+
+          current = {PARENTS: {}, DOWNLOADS: {}}
+          for parent in sorted(parents):
+              raw = manifest(parent)
+              if raw is None:
+                  print(f'::error::the parent image {parent} is not published')
+                  sys.exit(1)
+              current[PARENTS][parent] = 'sha256:' + hashlib.sha256(raw).hexdigest()
+          for url in sorted(downloads):
+              identifier = identify(url)
+              if identifier:
+                  current[DOWNLOADS][url] = identifier
+          for kind in (PARENTS, DOWNLOADS):
+              for source, value in current[kind].items():
+                  print(f'{source}: {value}')
+
+          def image_config(published):
+              """The image configuration of the published image, of its first platform where it has several."""
+              raw = manifest(published)
+              if raw is None:
+                  return None
+              reference = published
+              entries = [m for m in json.loads(raw).get('manifests', [])
+                         if m.get('platform', {}).get('architecture') not in (None, 'unknown')]
+              if entries:
+                  reference = published.rsplit(':', 1)[0] + '@' + entries[0]['digest']
+              run = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', reference, '--format', '{{json .Image}}'],
+                                   capture_output=True, text=True)
+              if run.returncode:
+                  print(f'::error::{reference} cannot be looked up: {run.stderr.strip()}')
+                  sys.exit(1)
+              return json.loads(run.stdout)
+
+
+          event, actor = os.environ['EVENT'], os.environ.get('ACTOR', '')
+          reasons = []
+          if not (event == 'schedule' or (event == 'workflow_dispatch' and actor == 'github-actions[bot]')):
+              reasons.append(f'a {event} run always builds')
+          else:
+              days = float(os.environ.get('REBUILD_DAYS') or 7)
+              now = (datetime.datetime.fromisoformat(os.environ['NOW']) if os.environ.get('NOW')
+                     else datetime.datetime.now(datetime.timezone.utc))
+              for entry in json.loads(os.environ['PUBLISH']):
+                  published = entry['tags'][0]
+                  image = image_config(published)
+                  if image is None:
+                      reasons.append(f'{published} is not published yet')
+                      continue
+                  labels = (image.get('config') or {}).get('Labels') or {}
+                  if PARENTS not in labels:
+                      reasons.append(f'{published} carries no record of its sources')
+                      continue
+                  stamp = re.match(r'([0-9-]+T[0-9:]+)(?:\.[0-9]+)?(Z|[+-][0-9:]+)?', image['created'])
+                  zone = stamp.group(2) if stamp.group(2) not in (None, 'Z') else '+00:00'
+                  age = now - datetime.datetime.fromisoformat(stamp.group(1) + zone)
+                  if age >= datetime.timedelta(days=days):
+                      reasons.append(f'{published} was built {age.days} days ago, the limit is {days:g} days')
+                  for kind in (PARENTS, DOWNLOADS):
+                      recorded = json.loads(labels.get(kind) or '{}')
+                      for source, value in current[kind].items():
+                          if recorded.get(source) != value:
+                              reasons.append(f'{source} changed since {published} was built: {recorded.get(source)} → {value}')
+          for reason in reasons:
+              print('build:', reason)
+          if not reasons:
+              print('no build: every parent image and download is unchanged; the packages are not compared,'
+                    f' the build after {os.environ.get("REBUILD_DAYS") or 7} days covers them')
+          record = {kind: json.dumps(values, separators=(',', ':')) for kind, values in current.items()}
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"build={'true' if reasons else 'false'}\n")
+              output.write(f"record={json.dumps(record, separators=(',', ':'))}\n")
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    strategy:
+      matrix:
+        arch: ${{ fromJSON(inputs.architectures) }}
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    outputs:
+      publish: ${{ steps.select.outputs.publish }}
+    steps:
+      - *checkout
+      - *select
+      - name: label the images with the sources they are built from
+        id: label
+        shell: python3 {0}
+        env:
+          RECORD: ${{ needs.check.outputs.record }}
+          SERVICES: ${{ steps.select.outputs.services }}
+          COMPOSE_FILES: ${{ steps.select.outputs.compose-files }}
+        run: |
+          import json, os
+          labels = {k: v.replace('$', '$$') for k, v in json.loads(os.environ.get('RECORD') or '{}').items()}
+          path =os.path.join(os.environ['RUNNER_TEMP'], 'docker-compose.labels.yml')
+          with open(path, 'w') as out:
+              json.dump({'services': {s: {'build': {'labels': labels}} for s in os.environ['SERVICES'].split()}}, out, indent=2)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"compose-files={os.environ['COMPOSE_FILES'].split(':', 1)[0]}:{path}\n")
       - name: free disk space
         if: inputs.free-disk
         run: |
@@ -183,6 +454,9 @@ jobs:
           docker system prune --all --force
           df -h /
       - name: build
+        env:
+          COMPOSE_FILE: ${{ steps.label.outputs.compose-files }}
+          COMPOSE_PATH_SEPARATOR: ":"
         run: docker compose build ${{ steps.select.outputs.services }}
       - name: install the development dependencies
         if: inputs.test != '' && hashFiles('package-lock.json') != ''
@@ -275,7 +549,7 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      - name: start the weekly rebuild on every version branch
+      - name: start the scheduled run on every version branch
         shell: python3 {0}
         env:
           BRANCH_TAGS: ${{ inputs.branch-tags }}

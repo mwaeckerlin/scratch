@@ -1,0 +1,11 @@
+# The registry tests/check-contract.sh asks for digests and annotations.
+
+services:
+
+  registry:
+    image: registry:2
+    user: "65534:65534"
+    tmpfs:
+      - /var/lib/registry:mode=1777
+    ports:
+      - "127.0.0.1:${REGISTRY_PORT:-45591}:5000"
