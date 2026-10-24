@@ -27,7 +27,7 @@ trap '"${STACK[@]}" down --volumes --remove-orphans > /dev/null 2>&1' EXIT
 "${STACK[@]}" up --detach --wait || exit 1
 
 python3 - <<'EOF'
-import datetime, itertools, json, os, re, subprocess, sys, tempfile, threading, time, urllib.request, yaml
+import datetime, itertools, json, os, re, shutil, subprocess, sys, tempfile, threading, time, urllib.request, yaml
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 workflow = yaml.safe_load(open('.github/workflows/docker-image.yml'))
@@ -125,13 +125,51 @@ def write(directory, files):
 # `/file` answers with an ETag; `/o/r/releases/latest/download/tool` redirects
 # to the current release the way GitHub does, and the release asset answers
 # with another ETag on every request, as GitHub's signed asset addresses do.
+# `/skills.git` is a git repository, served the way git's dumb HTTP protocol
+# reads it; its page answers with another ETag on every request, as github.com
+# does for `https://github.com/<owner>/<repository>.git`.
 versions = {'file': 1, 'release': 1}
 asset = itertools.count()
+repository = tempfile.mkdtemp()
+
+
+def git(*args):
+    return execute(['git', '-C', repository, '-c', 'user.name=test', '-c', 'user.email=test@localhost', *args]).strip()
+
+
+def commit(content):
+    """A new commit on master, published for the dumb HTTP protocol; returns its id."""
+    write(repository, {'skills/skill.md': content})
+    git('add', '.')
+    git('commit', '--quiet', '-m', content)
+    git('update-server-info')
+    return git('rev-parse', 'HEAD')
+
+
+git('init', '--quiet', '--initial-branch=master')
+first_commit = commit('one')
 
 
 class Downloads(BaseHTTPRequestHandler):
+    def do_GET(self):
+        path = self.path.split('?', 1)[0]
+        if path.startswith('/skills.git/'):
+            served = os.path.join(repository, '.git', path[len('/skills.git/'):])
+            if os.path.isfile(served):
+                content = open(served, 'rb').read()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Length', str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+                return
+        self.do_HEAD()
+
     def do_HEAD(self):
-        if self.path == '/file':
+        if self.path == '/skills.git':
+            self.send_response(200)
+            self.send_header('ETag', f'W/"page-{next(asset)}"')
+        elif self.path == '/file':
             self.send_response(200)
             self.send_header('ETag', f'"file-{versions["file"]}"')
         elif self.path == '/o/r/releases/latest/download/tool':
@@ -144,8 +182,6 @@ class Downloads(BaseHTTPRequestHandler):
             self.send_response(404)
         self.send_header('Content-Length', '0')
         self.end_headers()
-
-    do_GET = do_HEAD
 
     def log_message(self, *args):
         pass
@@ -171,6 +207,7 @@ with tempfile.TemporaryDirectory() as project, tempfile.TemporaryDirectory() as 
 FROM ${{BASE}} AS build
 FROM build AS fetch
 ADD {WEB}/file /file
+ADD {WEB}/skills.git#master:skills /skills/
 RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool
 FROM scratch
 COPY --from=build /content /content
@@ -281,6 +318,8 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
 
         build, record, out = decide()
         check('scheduled_run_without_published_image_builds', build is True and 'is not published yet' in out, out)
+        check('git_download_is_its_commit',
+              json.loads(record[DOWNLOADS]).get(f'{WEB}/skills.git#master:skills') == f'commit {first_commit}', record)
 
         publish()
         build, _, out = decide()
@@ -332,6 +371,11 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         check('new_release_builds', build is True and '/o/r/releases/download/v2/tool' in out, out)
         publish(record)
 
+        second_commit = commit('two')
+        build, record, out = decide()
+        check('new_commit_builds', build is True and 'skills.git#master:skills changed' in out and second_commit in out, out)
+        publish(record)
+
         push_image(f'{REGISTRY}/x/parent', 'two')
         build, record, out = decide()
         check('changed_parent_builds', build is True and f'{REGISTRY}/x/parent:latest changed' in out, out)
@@ -354,6 +398,7 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
     finally:
         for image in local_images:
             subprocess.run(['docker', 'image', 'rm', '--force', image], capture_output=True)
+        shutil.rmtree(repository, ignore_errors=True)
 
 print(f'\n==> Check contract results: {passed} passed, {failed} failed')
 sys.exit(1 if failed else 0)

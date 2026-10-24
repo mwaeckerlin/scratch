@@ -280,8 +280,38 @@ jobs:
           opener = urllib.request.build_opener(Unfollowed)
 
 
+          GIT = re.compile(r'(https?://[^#]+\.git)(?:#([^:]*))?(?::.*)?')
+
+
+          def commit_of(url, repository, ref):
+              """The commit a git reference names; the page of a repository changes its ETag on every request."""
+              ref = ref or 'HEAD'
+              if re.fullmatch(r'[0-9a-f]{40}', ref):
+                  return 'commit ' + ref
+              if ref.startswith('-'):
+                  print(f'{url}: {ref} is no git reference')
+                  return None
+              try:
+                  run = subprocess.run(['git', 'ls-remote', repository, ref], capture_output=True, text=True, timeout=60)
+              except subprocess.TimeoutExpired:
+                  print(f'{url}: no answer from git ls-remote')
+                  return None
+              if run.returncode:
+                  print(f'{url}: no answer, {run.stderr.strip()}')
+                  return None
+              found = dict(reversed(line.split('\t', 1)) for line in run.stdout.splitlines() if '\t' in line)
+              for name in (f'refs/heads/{ref}', f'refs/tags/{ref}^{{}}', f'refs/tags/{ref}', ref):
+                  if name in found:
+                      return 'commit ' + found[name]
+              print(f'{url}: the repository has no reference {ref}')
+              return None
+
+
           def identify(url):
               """What tells this version of the download from the next, None where the server says nothing."""
+              git = GIT.fullmatch(url)
+              if git:
+                  return commit_of(url, git.group(1), git.group(2))
               address = url
               for _ in range(10):
                   try:

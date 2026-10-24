@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-24 **1.1.14**
+    - A git repository that `ADD` takes, such as `https://github.com/mwaeckerlin/ai-agent-skills.git#master:skills`, is compared by the commit of its reference; the hourly check compared the `ETag` of its page on GitHub, which changes on every request, and so built hermes and openclaw every hour
+
 - 2026-10-24 **1.1.13**
     - The published image carries the record of its sources also where a test builds the image once more through a compose file of its own, as the end to end tests of nginx do; until now the hourly check of such a repository found no record of the parents and built every hour
     - The age of the published image comes from its label `org.mwaeckerlin.built`, written at the build

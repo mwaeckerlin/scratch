@@ -167,7 +167,7 @@ A push, a manual start and a git tag release always build. A scheduled run, and 
 | Source | What the check compares |
 | --- | --- |
 | Parent image | the digest of every image a Dockerfile of the compose file names in `FROM` or `COPY --from`, with the defaults of a global `ARG` and the `args` of the compose file filled in; stage names, `scratch` and the images the compose file builds itself are no parents |
-| Download | every literal address in `ADD` and in a `RUN` that calls `wget` or `curl`: an address below `/releases/latest`, the form of GitHub, by the release the redirect names; any other address by the `ETag` or `Last-Modified` of a HEAD request |
+| Download | every literal address in `ADD` and in a `RUN` that calls `wget` or `curl`: an address below `/releases/latest`, the form of GitHub, by the release the redirect names; a git repository, `<address>.git#<reference>:<directory>` as `ADD` takes it, by the commit `git ls-remote` names for the reference, because the page of a repository on GitHub answers with another `ETag` on every request; any other address by the `ETag` or `Last-Modified` of a HEAD request |
 | Age | the published image is rebuilt once it is `rebuild-days` old |
 | Published image | an image that is not published yet, or was published without a record of its sources, is built |
 
