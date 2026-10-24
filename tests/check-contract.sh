@@ -41,6 +41,11 @@ def step(job, key, value):
 SELECT = step('check', 'id', 'select')['run']
 DECIDE = step('check', 'id', 'decide')['run']
 JOIN = step('deploy', 'name', 'join the architectures into all tags')['run']
+# the steps of the build job that make and publish the images, in the order the job runs them
+LABEL = 'label the images with the sources they are built from'
+PROVE = 'prove that the pushed images carry the labels of their sources'
+ORDER = [s['name'] for s in jobs['build']['steps'] if s.get('name') in
+         ('build', 'test', LABEL, 'deploy under the architecture tag', PROVE)]
 REGISTRY = f"localhost:{os.environ['REGISTRY_PORT']}"
 WEB = f"http://127.0.0.1:{os.environ['WEB_PORT']}"
 STACK = ['docker', 'compose', '-f', 'tests/check/docker-compose.yml', '-p', 'scratch-check']
@@ -113,6 +118,7 @@ def outputs(path):
 
 def write(directory, files):
     for name, content in files.items():
+        os.makedirs(os.path.dirname(os.path.join(directory, name)), exist_ok=True)
         open(os.path.join(directory, name), 'w').write(content)
 
 
@@ -169,8 +175,16 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool
 FROM scratch
 COPY --from=build /content /content
 ''', 'Dockerfile.tool': f'FROM {REGISTRY}/x/parent:latest\n',
+                     # the test builds the published images once more through a compose file of its
+                     # own, as the end to end tests of mwaeckerlin/nginx do with `context: ../..`
+                     'tests/docker-compose.yml': f'''
+services:
+  app: {{build: {{context: ..}}, image: "{REGISTRY}/x/app"}}
+  tool: {{build: {{context: .., dockerfile: Dockerfile.tool}}, image: "{REGISTRY}/x/app:tool"}}
+''',
                      'package.json': json.dumps({'name': 'x', 'scripts': {
-                         'build': 'docker compose build', 'test': 'npm run build',
+                         'build': 'docker compose build',
+                         'test': 'npm run build && docker compose -f tests/docker-compose.yml build',
                          'deploy': 'docker compose push app tool'}})})
     # the project whose Dockerfiles are only read
     write(reading, {'docker-compose.yml': COMPOSE, 'Dockerfile': f'''# a stage, scratch and an image of this repository are no parents
@@ -206,9 +220,9 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         result = outputs(output)
         return result['build'] == 'true', json.loads(result['record']), run.stdout
 
-    def run_step(job, name, context):
+    def run_step(job, name, context, may_fail=False):
         """Runs a step of the workflow with its own env, its expressions filled from `context`, in a fresh
-        checkout of the project; returns what it writes to GITHUB_OUTPUT."""
+        checkout of the project; returns what it writes to GITHUB_OUTPUT, or with `may_fail` the finished run."""
         found = step(job, 'name', name)
 
         def resolve(text):
@@ -219,26 +233,26 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         env = {**os.environ, 'RUNNER_TEMP': temp, 'GITHUB_OUTPUT': output,
                **{k: resolve(v) for k, v in (found.get('env') or {}).items()}}
         command = [sys.executable, '-c'] if found.get('shell', '').startswith('python3') else ['bash', '-e', '-c']
+        if may_fail:
+            return subprocess.run([*command, resolve(found['run'])], cwd=project, env=env, capture_output=True, text=True)
         execute([*command, resolve(found['run'])], cwd=project, env=env)
         return outputs(output)
 
-    def publish(record=None):
-        """Builds, tests, pushes and joins the images through the steps of a run, labelled with the record, or with
-        none, as an image published before the check; the test command of the project builds the images once more,
-        as `npm test` does in the family."""
-        for leftover in ('docker-compose.override.yml', 'compose.override.yaml'):
-            if os.path.exists(os.path.join(project, leftover)):
-                os.remove(os.path.join(project, leftover))
+    def publish(record=None, skip=()):
+        """Builds, tests, labels, pushes and joins the images through the steps of a run, in the order of the build
+        job, labelled with the record, or with none, as an image published before the check; the test command of the
+        project builds the images once more, through the compose file of its tests."""
         chosen = select()
         context = {'matrix.arch': 'amd64', 'inputs.test': 'npm test', **{f'steps.select.outputs.{k}': v for k, v in chosen.items()}}
         context['needs.check.outputs.record'] = json.dumps(record or {})
-        context.update({f'steps.label.outputs.{k}': v for k, v in
-                        run_step('build', 'label the images with the sources they are built from', context).items()})
-        run_step('build', 'build', context)
         for image, staging in json.loads(chosen['stage']):
             local_images.update((image, f'{staging}-amd64'))
-        run_step('build', 'test', context)
-        run_step('build', 'deploy under the architecture tag', context)
+        for name in ORDER:
+            if name in skip:
+                continue
+            if name == PROVE and skip:
+                return run_step('build', name, context, may_fail=True)
+            run_step('build', name, context)
         execute(['bash', '-e', '-c', JOIN], env={**os.environ, 'PUBLISH': chosen['publish'], 'ARCHITECTURES': 'amd64'})
 
     def published_labels(tag):
@@ -252,6 +266,7 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
               jobs['build']['needs'] == 'check' and 'needs.check.outputs.build' in jobs['build']['if'],
               f"build needs {jobs['build'].get('needs')}, if {jobs['build'].get('if')}")
         check('check_and_build_select_the_same_images', step('check', 'id', 'select') == step('build', 'id', 'select'))
+        check('build_job_runs_the_steps_the_round_trip_runs', len(ORDER) == 5, ORDER)
 
         push_image(f'{REGISTRY}/x/parent', 'one')
         build, record, out = decide(event='push', actor='marc', cwd=reading)
@@ -277,6 +292,17 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         check('record_round_trip_through_the_labels',
               all({k: published_labels(t).get(k) for k in record} == record for t in ('latest', 'tool')),
               published_labels('latest'))
+        built = published_labels('latest').get('org.mwaeckerlin.built', '')
+        check('build_time_is_a_label',
+              re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', built) is not None
+              and abs((datetime.datetime.now(datetime.timezone.utc)
+                       - datetime.datetime.fromisoformat(built.replace('Z', '+00:00'))).total_seconds()) < 600,
+              built)
+        unlabelled = publish(record, skip=(LABEL,))
+        check('push_without_labels_fails_the_run',
+              unlabelled.returncode != 0 and 'was pushed without the labels' in unlabelled.stdout,
+              unlabelled.stdout + unlabelled.stderr)
+        publish(record)
         before = manifest_requests()
         build, again, out = decide()
         after = manifest_requests()

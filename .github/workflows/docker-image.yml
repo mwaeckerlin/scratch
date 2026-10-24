@@ -20,7 +20,8 @@
 # matched in full) gives the suffix of every tag, e.g. branch `new-33` with
 # the rule `new-([0-9]+)` → `-\1` builds `nginx-33`, `nginx-33-20260926`, …
 #
-# Per architecture: `docker compose build`, `npm test`, then `npm run deploy`
+# Per architecture: `docker compose build`, `npm test`, the labels of the
+# sources, then `npm run deploy`
 # with a compose override that names every image with an architecture tag
 # (`latest-amd64`, `nginx-33-arm64`). Only when every architecture is green,
 # the deploy job joins them into all tags of the image, from which docker
@@ -222,7 +223,7 @@ jobs:
         run: |
           import datetime, hashlib, json, os, re, subprocess, sys, urllib.error, urllib.parse, urllib.request
 
-          PARENTS, DOWNLOADS = 'org.mwaeckerlin.parents', 'org.mwaeckerlin.downloads'
+          PARENTS, DOWNLOADS, BUILT = 'org.mwaeckerlin.parents', 'org.mwaeckerlin.downloads', 'org.mwaeckerlin.built'
           VARIABLE = re.compile(r'\$\{(\w+)(?::-([^}]*))?\}|\$(\w+)')
           URL = re.compile(r'https?://[^\s\'"`;|&()<>]+')
 
@@ -400,7 +401,7 @@ jobs:
                   if PARENTS not in labels:
                       reasons.append(f'{published} carries no record of its sources')
                       continue
-                  stamp = re.match(r'([0-9-]+T[0-9:]+)(?:\.[0-9]+)?(Z|[+-][0-9:]+)?', image['created'])
+                  stamp = re.match(r'([0-9-]+T[0-9:]+)(?:\.[0-9]+)?(Z|[+-][0-9:]+)?', labels.get(BUILT) or image['created'])
                   zone = stamp.group(2) if stamp.group(2) not in (None, 'Z') else '+00:00'
                   age = now - datetime.datetime.fromisoformat(stamp.group(1) + zone)
                   if age >= datetime.timedelta(days=days):
@@ -432,26 +433,6 @@ jobs:
     steps:
       - *checkout
       - *select
-      - name: label the images with the sources they are built from
-        shell: python3 {0}
-        env:
-          RECORD: ${{ needs.check.outputs.record }}
-          SERVICES: ${{ steps.select.outputs.services }}
-          COMPOSE_FILES: ${{ steps.select.outputs.compose-files }}
-        run: |
-          # the override compose reads by itself, so that every build of the
-          # job carries the labels, also the one the test command runs
-          import json, os, sys
-          compose = os.environ['COMPOSE_FILES'].split(':', 1)[0]
-          name = 'compose.override.yaml' if os.path.basename(compose).startswith('compose.') else 'docker-compose.override.yml'
-          path = os.path.join(os.path.dirname(compose), name)
-          if os.path.exists(path):
-              print(f'::error::{path} exists; the labels of the sources need it')
-              sys.exit(1)
-          labels = {k: v.replace('$', '$$') for k, v in json.loads(os.environ.get('RECORD') or '{}').items()}
-          with open(path, 'w') as out:
-              json.dump({'services': {s: {'build': {'labels': labels}} for s in os.environ['SERVICES'].split()}}, out, indent=2)
-          print('labels', *labels, 'in', path)
       - name: free disk space
         if: inputs.free-disk
         run: |
@@ -469,6 +450,26 @@ jobs:
         env:
           TEST: ${{ inputs.test }}
         run: bash -c "$TEST"
+      - name: label the images with the sources they are built from
+        shell: python3 {0}
+        env:
+          RECORD: ${{ needs.check.outputs.record }}
+          STAGE: ${{ steps.select.outputs.stage }}
+        run: |
+          # after the test, which may have built the images once more through
+          # a compose file of its own: the labels go onto exactly the images
+          # that are pushed, as a configuration on top of their tested layers;
+          # the build time is a label too, because such a build keeps the
+          # creation time of a layer the cache already held
+          import datetime, json, os, subprocess
+          record = json.loads(os.environ.get('RECORD') or '{}')
+          if record:
+              record['org.mwaeckerlin.built'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+          labels = [a for k, v in record.items() for a in ('--label', f'{k}={v}')]
+          for image, _ in json.loads(os.environ['STAGE']) if labels else []:
+              subprocess.run(['docker', 'buildx', 'build', '--builder', 'default', '--quiet', *labels, '--tag', image, '-'],
+                             input=f'FROM {image}\n', text=True, check=True, stdout=subprocess.DEVNULL)
+              print('labels', *(a.split('=', 1)[0] for a in labels[1::2]), 'on', image)
       - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}
@@ -489,6 +490,35 @@ jobs:
           else
             docker compose push $SERVICES
           fi
+      - name: prove that the pushed images carry the labels of their sources
+        shell: python3 {0}
+        env:
+          RECORD: ${{ needs.check.outputs.record }}
+          STAGE: ${{ steps.select.outputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          # read back from the registry, so that a build after the labelling,
+          # by the test or by the deploy script, fails this run instead of
+          # making every following check build again
+          import json, os, subprocess, sys
+          record = json.loads(os.environ.get('RECORD') or '{}')
+          for _, staging in json.loads(os.environ['STAGE']) if record else []:
+              pushed = f"{staging}-{os.environ['ARCH']}"
+              run = subprocess.run(['docker', 'buildx', 'imagetools', 'inspect', pushed, '--format', '{{json .Image}}'],
+                                   capture_output=True, text=True)
+              if run.returncode:
+                  print(f'::error::{pushed} cannot be read back: {run.stderr.strip()}')
+                  sys.exit(1)
+              image = json.loads(run.stdout)
+              if 'created' not in image:
+                  image = image.get(f"linux/{os.environ['ARCH']}") or next(iter(image.values()))
+              labels = (image.get('config') or {}).get('Labels') or {}
+              missing = sorted(k for k, v in record.items() if labels.get(k) != v)
+              if missing or 'org.mwaeckerlin.built' not in labels:
+                  print(f'::error::{pushed} was pushed without the labels {", ".join(missing) or "org.mwaeckerlin.built"};'
+                        ' a build after the step that labels the images replaced them')
+                  sys.exit(1)
+              print(pushed, 'carries the labels of its sources')
 
   deploy:
     needs: build

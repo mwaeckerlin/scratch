@@ -1,5 +1,10 @@
 # Changelog
 
+- 2026-10-24 **1.1.13**
+    - The published image carries the record of its sources also where a test builds the image once more through a compose file of its own, as the end to end tests of nginx do; until now the hourly check of such a repository found no record of the parents and built every hour
+    - The age of the published image comes from its label `org.mwaeckerlin.built`, written at the build
+    - A run whose pushed image lacks the record of its sources fails, so the error shows in the run that causes it
+
 - 2026-10-23 **1.1.12**
     - The published image carries the record of its sources also where the tests build the image once more, so the hourly check no longer builds every time; the check names the labels it finds on the published image
 
