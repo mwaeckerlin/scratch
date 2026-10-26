@@ -47,6 +47,13 @@
 # branch that matches a rule, so the check reaches every version; the caller
 # grants `actions: write` for that.
 #
+# A push of the branch `version-base` rebuilds every version too: once its
+# deploy is green, the job `versions` runs the command `version-branches`,
+# which regenerates the version branches from the pushed commit, and starts
+# the workflow on every branch it moved, with `build=true`, so each major
+# version publishes the version just pushed. The caller grants
+# `contents: write` for the push of the branches.
+#
 # Needs in the calling repository: the secret DOCKERHUB_TOKEN, a Docker Hub
 # access token with read and write. The Docker Hub user is the variable
 # DOCKERHUB_USERNAME, or the GitHub owner of the repository if it is not set.
@@ -80,6 +87,14 @@ on:
         description: a scheduled run builds an image whose sources are unchanged once it is this many days old, for the packages the check does not compare
         type: number
         default: 7
+      version-base:
+        description: the branch whose push regenerates the version branches with `version-branches`; empty for none
+        type: string
+        default: ''
+      version-branches:
+        description: 'command that regenerates and force-pushes the version branches from the commit in the environment variable BASE_COMMIT (`git checkout -B <branch> "$BASE_COMMIT"`); it runs after a green deploy of a push to `version-base`, and every branch it moved is then built with `-f build=true`, which the caller declares as a workflow_dispatch input; the caller grants `contents: write`'
+        type: string
+        default: ''
     secrets:
       DOCKERHUB_TOKEN:
         required: true
@@ -217,6 +232,9 @@ jobs:
           PUBLISH: ${{ steps.select.outputs.publish }}
           EVENT: ${{ github.event_name }}
           ACTOR: ${{ github.actor }}
+          # set by the job versions when it starts a version branch after a
+          # push of its base branch
+          FORCE: ${{ github.event.inputs.build }}
           REBUILD_DAYS: ${{ inputs.rebuild-days }}
           # set by the tests only; a run compares with the moment it runs
           NOW: ""
@@ -414,7 +432,9 @@ jobs:
 
           event, actor = os.environ['EVENT'], os.environ.get('ACTOR', '')
           reasons = []
-          if not (event == 'schedule' or (event == 'workflow_dispatch' and actor == 'github-actions[bot]')):
+          if os.environ.get('FORCE') == 'true':
+              reasons.append(f'a {event} run with build=true always builds')
+          elif not (event == 'schedule' or (event == 'workflow_dispatch' and actor == 'github-actions[bot]')):
               reasons.append(f'a {event} run always builds')
           else:
               days = float(os.environ.get('REBUILD_DAYS') or 7)
@@ -598,6 +618,47 @@ jobs:
             done
             docker buildx imagetools create $targets $sources
           done
+
+  versions:
+    # a push of the base branch rebuilds every version branch from that very
+    # commit, so each major version publishes the version just pushed; a push
+    # with the GITHUB_TOKEN starts no workflow, so the job starts each branch
+    # itself, with build=true past the check of unchanged sources
+    needs: deploy
+    if: github.event_name == 'push' && inputs.version-branches != '' && github.ref_name == inputs.version-base
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: regenerate the version branches from the pushed commit and build them
+        shell: python3 {0}
+        env:
+          BRANCH_TAGS: ${{ inputs.branch-tags }}
+          REF_NAME: ${{ github.ref_name }}
+          BASE_COMMIT: ${{ github.sha }}
+          SCRIPT: ${{ inputs.version-branches }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          import json, os, re, subprocess
+
+          def heads():
+              listing = subprocess.run(['git', 'ls-remote', '--heads', 'origin'], check=True,
+                                       capture_output=True, text=True).stdout.split()
+              return dict((listing[i + 1].removeprefix('refs/heads/'), listing[i]) for i in range(0, len(listing) - 1, 2))
+
+          rules = json.loads(os.environ.get('BRANCH_TAGS') or '[]')
+          before = heads()
+          for key, value in (('user.name', 'github-actions[bot]'),
+                             ('user.email', '41898282+github-actions[bot]@users.noreply.github.com')):
+              subprocess.run(['git', 'config', key, value], check=True)
+          subprocess.run(['bash', '-e', '-c', os.environ['SCRIPT']], check=True)
+          after = heads()
+          for branch in sorted(after):
+              moved = before.get(branch) != after[branch]
+              if moved and branch != os.environ['REF_NAME'] and any('branch' in r and re.fullmatch(r['branch'], branch) for r in rules):
+                  print('build', branch, 'at', after[branch])
+                  subprocess.run(['gh', 'workflow', 'run', 'docker.yml', '--ref', branch, '-f', 'build=true'], check=True)
 
   branches:
     # scheduled runs start on the default branch only; this one starts the

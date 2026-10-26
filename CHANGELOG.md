@@ -1,5 +1,9 @@
 # Changelog
 
+- 2026-10-26 **1.1.15**
+    - A push of the branch `version-base` rebuilds every version branch from the pushed commit: once its deploy is green, the job `versions` runs the command `version-branches` and starts the workflow with `build=true` on every branch it moved, so each major version publishes the version just pushed
+    - A start with `build=true` builds without the source check
+
 - 2026-10-24 **1.1.14**
     - A git repository that `ADD` takes, such as `https://github.com/mwaeckerlin/ai-agent-skills.git#master:skills`, is compared by the commit of its reference; the hourly check compared the `ETag` of its page on GitHub, which changes on every request, and so built hermes and openclaw every hour
 

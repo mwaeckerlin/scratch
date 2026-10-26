@@ -159,10 +159,31 @@ A repository that deviates adds a `with:` block:
 - `ref`: git tag to build in place of the branch that started the run; default: empty
 - `free-disk`: removes the preinstalled SDKs of the runner (.NET, Android, Haskell, the tool cache) and the preloaded Docker images before the build; measured on 2026-09-26, the runners have a 145GB root with 87GB (amd64) and 108GB (arm64) free, and the clean-up raises that to 114GB and 123GB; default: `false`
 - `rebuild-days`: a scheduled run builds an image whose sources are unchanged once it is this many days old; default: `7`
+- `version-base` and `version-branches`: a push of the branch `version-base` also rebuilds every version branch from the pushed commit, so each major version publishes the version just pushed; default: empty for both. Once the deploy of the push is green, the job `versions` checks out the pushed commit with its history and runs the command `version-branches` with the environment variable `BASE_COMMIT`, the pushed commit. The command creates every version branch from it (`git checkout -B new-33 "$BASE_COMMIT"`), changes what differs per version and force-pushes the branch. A push with the token of the workflow starts no workflow, so the job then starts `docker.yml` on every branch the command moved and a rule of `branch-tags` names, with the input `build=true`, which builds without the source check. The caller declares that input and grants `contents: write` for the push:
+
+  ```yaml
+  on:
+    workflow_dispatch:
+      inputs:
+        build:
+          description: build without the source check
+          type: boolean
+          default: false
+
+  jobs:
+    docker:
+      uses: mwaeckerlin/scratch/.github/workflows/docker-image.yml@master
+      permissions:
+        actions: write
+        contents: write
+      with:
+        version-base: new
+        version-branches: ./create-branches.sh
+  ```
 
 ### Source check
 
-A push, a manual start and a git tag release always build. A scheduled run, and a run the scheduled run starts on a version branch or for a git tag, first runs the job `check`, which compares the sources of the images with what the published images were built from, prints every difference, and starts the build only where one exists:
+A push, a manual start, a start with `build=true` and a git tag release always build. A scheduled run, and a run the scheduled run starts on a version branch or for a git tag, first runs the job `check`, which compares the sources of the images with what the published images were built from, prints every difference, and starts the build only where one exists:
 
 | Source | What the check compares |
 | --- | --- |

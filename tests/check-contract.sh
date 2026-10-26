@@ -245,12 +245,12 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
 
     selection = select()
 
-    def decide(event='schedule', actor='github-actions[bot]', days='7', now=None, cwd=project):
+    def decide(event='schedule', actor='github-actions[bot]', days='7', now=None, cwd=project, force=''):
         output = os.path.join(temp, 'decide-output')
         open(output, 'w').close()
         run = subprocess.run([sys.executable, '-c', DECIDE], cwd=cwd, capture_output=True, text=True,
                              env={**os.environ, 'GITHUB_OUTPUT': output, 'SERVICES': selection['services'],
-                                  'PUBLISH': selection['publish'], 'EVENT': event, 'ACTOR': actor,
+                                  'PUBLISH': selection['publish'], 'EVENT': event, 'ACTOR': actor, 'FORCE': force,
                                   'REBUILD_DAYS': days, 'NOW': now.isoformat() if now else ''})
         if run.returncode:
             return None, None, run.stdout + run.stderr
@@ -360,6 +360,8 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
         check('manual_start_always_builds', build is True, out)
         build, _, out = decide(event='workflow_dispatch')
         check('start_by_the_scheduled_run_checks', build is False, out)
+        build, _, out = decide(event='workflow_dispatch', force='true')
+        check('start_after_a_push_of_the_base_branch_builds', build is True and 'build=true always builds' in out, out)
 
         versions['file'] += 1
         build, record, out = decide()

@@ -14,6 +14,8 @@
 # - a service without `image` cannot be pushed and is skipped
 # - a service built in a git submodule is left to the submodule's repository
 # - a repository that builds nothing of its own fails the run
+# - a push of the base branch regenerates the version branches from the
+#   pushed commit and builds every branch that moved
 # - the override it writes makes `docker compose push` of the selected
 #   services (the family's `npm run deploy`) use the architecture tags
 # It also checks that the caller of this repository uses the local workflow.
@@ -286,6 +288,46 @@ with tempfile.TemporaryDirectory() as d:
         'gh workflow run docker.yml --ref 2.x',
         'gh workflow run docker.yml --ref master -f ref=1-v1.4.2',
         'gh workflow run docker.yml --ref master -f ref=2-v2.0.5',
+    ])
+
+# A push of the base branch regenerates the version branches from the pushed
+# commit and builds every branch the command moved, with build=true; git
+# answers before and after the command with the heads it would have, and the
+# command records the commit it was given.
+versions = workflow['jobs']['versions']
+check_calls('versions_runs_after_the_deploy_of_a_push_of_the_base',
+            (versions.get('needs'), versions.get('if')),
+            ('deploy', "github.event_name == 'push' && inputs.version-branches != '' && github.ref_name == inputs.version-base"))
+versions_checkout = next(s for s in versions['steps'] if s.get('uses', '').startswith('actions/checkout'))
+check_calls('versions_checkout_reads_the_history', (versions_checkout.get('with') or {}).get('fetch-depth'), 0)
+versions_step = next(s for s in versions['steps'] if s.get('name', '').startswith('regenerate the version branches'))
+check_calls('versions_gets_the_pushed_commit', versions_step['env'].get('BASE_COMMIT'), '${{ github.sha }}')
+with tempfile.TemporaryDirectory() as d:
+    log = os.path.join(d, 'calls')
+    moved = os.path.join(d, 'moved')
+    before = ''.join(f'{c} refs/heads/{b}\\n' for b, c in (('new', 'a1'), ('new-33', 'b1'), ('new-34', 'c1'), ('33', 'd1')))
+    after = ''.join(f'{c} refs/heads/{b}\\n' for b, c in (('new', 'a1'), ('new-33', 'b2'), ('new-34', 'c2'), ('new-35', 'e2'),
+                                                          ('33', 'd1'), ('feature-x', 'f2')))
+    open(os.path.join(d, 'git'), 'w').write(f'''#!/bin/sh
+case "$1" in
+  ls-remote) if [ -e {moved} ]; then printf "{after}"; else printf "{before}"; fi ;;
+  *) echo "git $*" >> {log} ;;
+esac
+''')
+    open(os.path.join(d, 'gh'), 'w').write(f'#!/bin/sh\necho "gh $*" >> {log}\n')
+    for tool in ('git', 'gh'):
+        os.chmod(os.path.join(d, tool), 0o755)
+    subprocess.run([sys.executable, '-c', versions_step['run']], check=True, capture_output=True, text=True,
+                   env={**os.environ, 'PATH': d + ':' + os.environ['PATH'], 'REF_NAME': 'new', 'BASE_COMMIT': 'a1',
+                        'SCRIPT': f'echo "script from $BASE_COMMIT" >> {log}; touch {moved}',
+                        'BRANCH_TAGS': json.dumps(BRANCH_RULES + [{'branch': '([0-9]+)', 'suffix': '-\\1'}])})
+    check_calls('versions_builds_every_branch_the_command_moved', open(log).read().splitlines(), [
+        'git config user.name github-actions[bot]',
+        'git config user.email 41898282+github-actions[bot]@users.noreply.github.com',
+        'script from a1',
+        'gh workflow run docker.yml --ref new-33 -f build=true',
+        'gh workflow run docker.yml --ref new-34 -f build=true',
+        'gh workflow run docker.yml --ref new-35 -f build=true',
     ])
 
 # A called workflow gets at most the rights of the caller's token, and GitHub
