@@ -1,5 +1,8 @@
 # Changelog
 
+- 2026-10-27 **1.1.16**
+    - A published base image keeps its ONBUILD instructions: since 1.1.13 the labels were added with a build of `FROM <image>`, which ran those instructions and left them out of the result, so `mwaeckerlin/ubuntu-base` lost the installation of `PACKAGES` for the images built on it and `mwaeckerlin/scratch`, `very-base`, `ubuntu-scratch` and `ubuntu-very-base` lost the build argument `lang`; the labels now come with a build of the Dockerfile from the cache of the tested build
+
 - 2026-10-26 **1.1.15**
     - A push of the branch `version-base` rebuilds every version branch from the pushed commit: once its deploy is green, the job `versions` runs the command `version-branches` and starts the workflow with `build=true` on every branch it moved, so each major version publishes the version just pushed
     - A start with `build=true` builds without the source check

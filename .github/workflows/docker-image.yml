@@ -504,22 +504,28 @@ jobs:
         shell: python3 {0}
         env:
           RECORD: ${{ needs.check.outputs.record }}
-          STAGE: ${{ steps.select.outputs.stage }}
+          SERVICES: ${{ steps.select.outputs.services }}
+          COMPOSE_FILES: ${{ steps.select.outputs.compose-files }}
         run: |
           # after the test, which may have built the images once more through
-          # a compose file of its own: the labels go onto exactly the images
-          # that are pushed, as a configuration on top of their tested layers;
-          # the build time is a label too, because such a build keeps the
-          # creation time of a layer the cache already held
+          # a compose file of its own: the images are built once more from their
+          # own Dockerfile, with the labels in a compose file of this step, so
+          # every layer comes from the cache of the tested build. A build of
+          # `FROM <image>` with labels would run the ONBUILD instructions of the
+          # image and leave them out of the result, which broke every base image
+          # that has them. The build time is a label too, because a build from
+          # the cache keeps the creation time of the layers it already held.
           import datetime, json, os, subprocess
           record = json.loads(os.environ.get('RECORD') or '{}')
           if record:
               record['org.mwaeckerlin.built'] = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-          labels = [a for k, v in record.items() for a in ('--label', f'{k}={v}')]
-          for image, _ in json.loads(os.environ['STAGE']) if labels else []:
-              subprocess.run(['docker', 'buildx', 'build', '--builder', 'default', '--quiet', *labels, '--tag', image, '-'],
-                             input=f'FROM {image}\n', text=True, check=True, stdout=subprocess.DEVNULL)
-              print('labels', *(a.split('=', 1)[0] for a in labels[1::2]), 'on', image)
+              compose = os.environ['COMPOSE_FILES'].split(':', 1)[0]
+              labels = {k: v.replace('$', '$$') for k, v in record.items()}
+              path = os.path.join(os.environ['RUNNER_TEMP'], 'docker-compose.labels.yml')
+              with open(path, 'w') as out:
+                  json.dump({'services': {s: {'build': {'labels': labels}} for s in os.environ['SERVICES'].split()}}, out, indent=2)
+              subprocess.run(['docker', 'compose', '-f', compose, '-f', path, 'build', *os.environ['SERVICES'].split()], check=True)
+              print('labels', *labels, 'on', os.environ['SERVICES'])
       - uses: docker/login-action@v4
         with:
           username: ${{ vars.DOCKERHUB_USERNAME || github.repository_owner }}

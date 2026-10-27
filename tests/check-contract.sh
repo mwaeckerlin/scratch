@@ -211,6 +211,7 @@ ADD {WEB}/skills.git#master:skills /skills/
 RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool
 FROM scratch
 COPY --from=build /content /content
+ONBUILD ARG lang
 ''', 'Dockerfile.tool': f'FROM {REGISTRY}/x/parent:latest\n',
                      # the test builds the published images once more through a compose file of its
                      # own, as the end to end tests of mwaeckerlin/nginx do with `context: ../..`
@@ -337,6 +338,10 @@ RUN wget -O /usr/bin/tool {WEB}/o/r/releases/latest/download/tool \\
               and abs((datetime.datetime.now(datetime.timezone.utc)
                        - datetime.datetime.fromisoformat(built.replace('Z', '+00:00'))).total_seconds()) < 600,
               built)
+        # a base image keeps its ONBUILD instructions for the images built on it
+        docker('pull', '--quiet', f'{REGISTRY}/x/app:latest')
+        onbuild = docker('image', 'inspect', '--format', '{{json .Config.OnBuild}}', f'{REGISTRY}/x/app:latest').strip()
+        check('onbuild_survives_the_labels', 'ARG lang' in onbuild, onbuild)
         unlabelled = publish(record, skip=(LABEL,))
         check('push_without_labels_fails_the_run',
               unlabelled.returncode != 0 and 'was pushed without the labels' in unlabelled.stdout,
